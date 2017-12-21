@@ -10,15 +10,23 @@ use coq::checker::univ::{
     Huniv,
     LMap,
     SubstError,
+    SubstResult,
 };
 use coq::kernel::esubst::{
+    IdxError,
     IdxResult,
 };
 use coq::kernel::names::{
     MutInd,
 };
+use core::convert::{TryFrom};
+use ocaml::de::{
+    ORef,
+};
 use ocaml::values::{
+    Cons,
     Constr,
+    // Finite,
     List,
     Ind,
     IndArity,
@@ -36,12 +44,14 @@ use ocaml::values::{
 };
 use std::borrow::{Cow};
 use std::collections::hash_map;
+use std::sync::{Arc};
 
 /// Extracting an inductive type from a construction
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum IndError {
     Error(String),
+    Idx(IdxError),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -50,11 +60,26 @@ pub enum IndEvaluationError {
     Conv(Box<ConvError>),
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ConsError {
+    Error(String),
+    Subst(SubstError),
+    Idx(IdxError),
+}
+
 pub type IndResult<T> = Result<T, IndError>;
 
 pub type IndEvaluationResult<T> = Result<T, IndEvaluationError>;
 
+pub type ConsResult<T> = Result<T, ConsError>;
+
 pub type MindSpecif<'b> = (&'b IndPack, &'b OneInd);
+
+impl ::std::convert::From<IdxError> for IndError {
+    fn from(e: IdxError) -> Self {
+        IndError::Idx(e)
+    }
+}
 
 impl ::std::convert::From<Box<ConvError>> for IndEvaluationError {
     fn from(e: Box<ConvError>) -> Self {
@@ -67,6 +92,19 @@ impl ::std::convert::From<SubstError> for IndEvaluationError {
         IndEvaluationError::Subst(e)
     }
 }
+
+impl ::std::convert::From<IdxError> for ConsError {
+    fn from(e: IdxError) -> Self {
+        ConsError::Idx(e)
+    }
+}
+
+impl ::std::convert::From<SubstError> for ConsError {
+    fn from(e: SubstError) -> Self {
+        ConsError::Subst(e)
+    }
+}
+
 
 impl Constr {
     /// This API is weird; it mutates self in place.  This is done in order to allow the argument
@@ -89,12 +127,41 @@ impl Constr {
             _ => None
         })
     }
+
+    /* /// This API is similar to find_rectype, but the returned inductive must not be CoFinite.
+    ///
+    /// NOTE: self should be typechecked beforehand!
+    fn find_inductive(&mut self, env: &mut Env) -> ConvResult<Option<(&Ind, Vec<&Constr>)>> {
+        match self.find_rectype(env)? {
+            Some((&(ref ind, _), l)) =>
+                env.globals.lookup_mind_specif(ind)?
+                           .and_then( |mind| if mind.0.finite != Finite::CoFinite { Some(ind) }
+                                             else { None }),
+            None => Ok(None),
+        }
+    }
+
+    /// This API is similar to find_rectype, but the returned inductive must be CoFinite.
+    ///
+    /// NOTE: self should be typechecked beforehand!
+    fn find_coinductive(&mut self, env: &mut Env) -> ConvResult<Option<(&Ind, Vec<&Constr>)>> {
+        match self.find_rectype(env)? {
+            Some((&(ref ind, _), l)) =>
+                env.globals.lookup_mind_specif(ind)?
+                           .and_then( |mind| if mind.0.finite == Finite::CoFinite { Some(ind) }
+                                             else { None }),
+            None => Ok(None),
+        }
+    } */
 }
 
 impl<'g> Globals<'g> {
     /// Raise Not_Found if not an inductive type.
-    pub fn lookup_mind_specif(&self, kn: &MutInd,
-                              tyi: usize) -> IndResult<Option<MindSpecif<'g>>> {
+    pub fn lookup_mind_specif(&self, ind: &Ind) -> IndResult<Option<MindSpecif<'g>>> {
+        let Ind { name: ref kn, pos } = *ind;
+        // TODO: Check to see if i being positive is guaranteed elsewhere.
+        let tyi = usize::try_from(pos).map_err(IdxError::from)?;
+
         match self.lookup_mind(kn) {
             None => Ok(None),
             Some(mib) => {
@@ -122,6 +189,25 @@ impl IndPack {
         } else {
             None
         }
+    }
+
+    /// Build the substitution that replaces Rels by the appropriate
+    /// inductives
+    pub fn ind_subst(&self, kn: &MutInd, u: &Instance) -> Vec<Constr> {
+        let ntypes = self.ntypes;
+        // Note that ntypes - k - 1 is guaranteed to be in-bounds (both ≥ 0 and < n) since k
+        // ranges from 0 to ntypes - 1.
+        (0..ntypes).map( |k| Constr::Ind(ORef(Arc::from(PUniverses(Ind { name: kn.clone(),
+                                                                         pos: ntypes - k - 1, },
+                                                                   u.clone())))) )
+                   .collect()
+    }
+
+    /// Instantiate inductives in constructor type
+    fn constructor_instantiate(&self, kn: &MutInd, u: &Instance,
+                               c: &Constr, tbl: &Huniv) -> SubstResult<Constr> {
+        let s = self.ind_subst(kn, u);
+        Ok(c.subst_instance(u, tbl)?.substl(&s)?)
     }
 }
 
@@ -192,6 +278,8 @@ impl<'b, 'g> Env<'b, 'g> {
         let mut subst = LMap::new();
         for d in ctx {
             if let RDecl::LocalDef(_, _, _) = *d { continue }
+            // FIXME: Figure out why it's okay to just eat arguments if there are no
+            // more exps; shouldn't it be an error to pass too many arguments in?
             if let List::Cons(ref o) = *exp {
                 let (ref u, ref exp_) = **o;
                 exp = exp_;
@@ -298,5 +386,43 @@ impl<'b, 'g> Env<'b, 'g> {
                              mip: &PUniverses<MindSpecif<'g>>) ->
                              IndEvaluationResult<Cow<'g, Constr>> {
         self.type_of_inductive_knowing_parameters(mip, &[])
+    }
+}
+
+impl Cons {
+    /// Type of a constructor.
+    fn type_of_constructor_subst<'g>(&self, u: &Instance,
+                                     (mib, mip): MindSpecif<'g>,
+                                     tbl: &Huniv) -> ConsResult<Constr> {
+        let ind = &self.ind;
+        let specif = &mip.user_lc;
+        let i = self.idx;
+        // TODO: We take a liberty compared to the OCaml implementation and look directly at
+        // the length of specif, rather than looking at the length of consnames.  If the fact
+        // that i < mip.user_lc is checked elsewhere, and this is a check designed to ensure
+        // that all the constructors have names, this should of course be fixed.
+        // TODO: Check to see if i being positive is guaranteed elsewhere.
+        match usize::try_from(i).map_err(IdxError::from)?.checked_sub(1) {
+            Some(i) => match specif.get(i) {
+                Some(c) => Ok(mib.constructor_instantiate(&ind.name, u, c, tbl)?),
+                None => Err(ConsError::Error("Not enough constructors in the type.".into())),
+            },
+            // TODO: Check to see if this is already checked elsewhere.
+            None => Err(ConsError::Error("Constructor index must be nonzero".into())),
+        }
+    }
+}
+
+impl PUniverses<Cons> {
+    fn type_of_constructor_gen<'g>(&self, mspec: MindSpecif<'g>,
+                                   tbl: &Huniv) -> ConsResult<Constr> {
+        let PUniverses(ref cstr, ref u) = *self;
+        cstr.type_of_constructor_subst(u, mspec, tbl)
+    }
+
+    /// Return type as quoted by the user
+    pub fn type_of_constructor<'g>(&self, mspec: MindSpecif<'g>,
+                                   tbl: &Huniv) -> ConsResult<Constr> {
+        self.type_of_constructor_gen(mspec, tbl)
     }
 }
