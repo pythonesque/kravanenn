@@ -17,6 +17,7 @@ use ocaml::values::{
     Name,
     PRec,
     PUniverses,
+    Rctxt,
     RDecl,
     Sort,
     SortContents,
@@ -38,6 +39,10 @@ pub enum Info {
 pub enum SubstError {
     LocalOccur,
     Idx(IdxError),
+}
+
+pub enum DecomposeError {
+    Anomaly(String),
 }
 
 pub struct Substituend<A> {
@@ -81,7 +86,7 @@ impl Univ {
     fn sort_of(&self) -> Sort {
         if self.is_type0m() { Sort::Prop(SortContents::Null) }
         else if self.is_type0() { Sort::Prop(SortContents::Pos) }
-        else { Sort::Type(ORef(Arc::new(self.clone()))) }
+        else { Sort::Type(self.clone()) }
     }
 }
 
@@ -481,6 +486,61 @@ impl Constr {
                 }
             }
         }
+    }
+
+    /// Iterate products, with or without lets
+
+    /// Constructs either [(x:t)c] or [[x=b:t]c]
+    pub fn mk_prod_or_let_in(self, decl: RDecl) -> Constr {
+        match decl {
+            RDecl::LocalAssum(na, t) => Constr::Prod(ORef(Arc::from((na, t, self)))),
+            RDecl::LocalDef(na, b, t) =>
+                Constr::LetIn(ORef(Arc::from((na, b, (*t).clone(), self)))),
+        }
+    }
+
+    pub fn it_mk_prod_or_let_in(self, ctx: &Rctxt) -> Constr {
+        ctx.iter().fold(self, |c, d| c.mk_prod_or_let_in(d.clone()))
+    }
+
+    pub fn decompose_prod_assum(&self) -> (Vec<RDecl>, &Constr) {
+        // TODO: For these sorts of generated definition sets, we don't
+        // really need to perform clone() on the Constrs, since they can
+        // be used by reference.
+        let mut l = Vec::new();
+        let mut c = self;
+        loop {
+            match *c {
+                Constr::Prod(ref o) => {
+                    let (ref x, ref t, ref c_) = **o;
+                    l.push(RDecl::LocalAssum(x.clone(), t.clone()));
+                    c = c_;
+                },
+                Constr::LetIn(ref o) => {
+                    let (ref x, ref b, ref t, ref c_) = **o;
+                    l.push(RDecl::LocalDef(x.clone(), b.clone(), ORef(Arc::from(t.clone()))));
+                    c = c_;
+                },
+                Constr::Cast(ref o) => {
+                    let (ref c_, _, _) = **o;
+                    c = c_;
+                },
+                _ => return (l, c),
+            }
+        }
+    }
+
+    /// Other term constructors
+
+    pub fn mk_arity(sign: &Rctxt, s: Sort) -> Constr {
+        // FIXME: It seems silly to allocate this here...
+        Constr::Sort(ORef(Arc::from(s))).it_mk_prod_or_let_in(sign)
+    }
+
+    pub fn dest_arity(&self) -> Result<(Vec<RDecl>, &Sort), DecomposeError> {
+        let (l, c) = self.decompose_prod_assum();
+        if let Constr::Sort(ref s) = *c { Ok((l, s)) }
+        else { Err(DecomposeError::Anomaly("destArity: not an arity".into())) }
     }
 
     /// Alpha conversion functions

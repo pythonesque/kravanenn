@@ -39,7 +39,7 @@ pub struct Globals<'g> {
     inductives: MindMapEnv<'g, &'g IndPack>,
     inductives_eq: KnMap<'g, Kn>,
     /// Hash-consed universe table.
-    univ_hcons_tbl: Huniv,
+    pub univ_hcons_tbl: Huniv,
     // modules: MpMap<Module>,
     // modtypes: MpMap<ModType>,
 }

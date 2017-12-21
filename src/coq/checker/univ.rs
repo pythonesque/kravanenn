@@ -6,6 +6,7 @@ use coq::lib::hashcons::{HashconsedType, Hlist, Hstring, Table};
 use coq::lib::hashset::combine;
 use core::convert::TryFrom;
 use ocaml::de::{
+    Array,
     ORef,
 };
 use ocaml::values::{
@@ -59,7 +60,12 @@ pub enum SubstError {
     Idx(IdxError),
 }
 
-type UMap<T> = HashMap<Level, T>;
+/// Support for universe polymorphism
+
+/// Polymorphic maps from universe levels to 'a
+pub type LMap<T> = HashMap<Level, T>;
+
+pub type UMap<T> = LMap<T>;
 
 type Hexpr = ();
 
@@ -159,6 +165,14 @@ impl<T> HList<T>
         let hl = l.hash();
         let h = combine::combine(h, hl);
         Ok(HList::Cons(ORef(Arc::new((x, h, l)))).hcons(u))
+    }
+
+    fn tip<'a, U>(e: T, u: &'a Helem<T, U>) -> IdxResult<Self>
+        where
+            T: Hashconsed<U>,
+            T: Clone,
+    {
+        Self::cons(e, Self::nil(), u)
     }
 
     pub fn map<'a, U, F, E>(&self, mut f: F, u: &'a Helem<T, U>) -> Result<Self, E>
@@ -561,6 +575,10 @@ impl Expr {
 
     const TYPE1 : Self = Expr(Level::SET, 1);
 
+    fn make(l: Level) -> Self {
+        Expr(l, 0)
+    }
+
     fn is_prop(&self) -> bool {
         if let Expr(ref l, 0) = *self { l.is_prop() }
         else { false }
@@ -578,6 +596,16 @@ impl Expr {
         // NOTE: Assuming Dps are all maximally hconsed already when loaded from the file, we just
         // need to clone() here to retain maximal sharing.
         else { Ok(Expr(u.clone(), n.checked_add(1).ok_or(IdxError::from(NoneError))?)) }
+    }
+
+    fn addn(&self, k: Int) -> IdxResult<Self> {
+        let Expr(ref u, n) = *self;
+        if k == 0 { Ok(self.clone()) }
+        else if u.is_prop() {
+            Ok(Expr(Level::SET, n.checked_add(k).ok_or(IdxError::from(NoneError))?))
+        } else {
+            Ok(Expr(u.clone(), n.checked_add(k).ok_or(IdxError::from(NoneError))?))
+        }
     }
 
     fn super_(&self, y: &Self) -> Result<bool, Ordering> {
@@ -635,6 +663,7 @@ impl Expr {
         }
         return Ok(false)
     }
+
 }
 
 impl Univ {
@@ -642,6 +671,25 @@ impl Univ {
         self.hequal(y) ||
         self.hash() == y.hash() &&
         self.for_all2(y, Expr::equal)
+    }
+
+    pub fn make(l: Level, u: &Huniv) -> IdxResult<Self> {
+        Self::tip(Expr::make(l), u)
+    }
+
+    /// The lower predicative level of the hierarchy that contains (impredicative)
+    /// Prop and singleton inductive types
+    pub fn type0m(u: &Huniv) -> Self {
+        // We know the hash for the lower levels of the hierarchy won't overflow,
+        // so it's okay to unwrap it.
+        Self::tip(Expr::PROP, u).unwrap()
+    }
+
+    /// The level of sets
+    pub fn type0(u: &Huniv) -> Self {
+        // We know the hash for the lower levels of the hierarchy won't overflow,
+        // so it's okay to unwrap it.
+        Self::tip(Expr::SET, u).unwrap()
     }
 
     pub fn is_type0m(&self) -> bool {
@@ -677,7 +725,34 @@ impl Univ {
     /// Returns the formal universe that lies just above the universe variable u.
     /// Used to type the sort u.
     pub fn super_(&self, u: &Huniv) -> IdxResult<Self> {
-        self.map( |x| x.successor(), u )
+        self.map( |x| x.successor(), u)
+    }
+
+    pub fn addn(&self, n: Int, u: &Huniv) -> IdxResult<Self> {
+        self.map( |x| x.addn(n), u)
+    }
+
+    pub fn merge_univs(&self, mut l2: &Self, u: &Huniv) -> IdxResult<Self> {
+        let mut l1 = self;
+        loop {
+            match (l1, l2) {
+                (&HList::Nil, _) => return Ok(l2.clone()),
+                (_, &HList::Nil) => return Ok(l1.clone()),
+                (&HList::Cons(ref o1), &HList::Cons(ref o2)) => {
+                    let (ref h1, _, ref t1) = **o1;
+                    let (ref h2, _, ref t2) = **o2;
+                    match h1.super_(h2) {
+                        Ok(true) => { /* h1 < h2 */ l1 = t1 },
+                        Ok(false) => { l2 = t2 },
+                        Err(c) => return match c {
+                            Ordering::Less => /* h1 < h2 is name order */
+                                Self::cons(h1.clone(), t1.merge_univs(l2, u)?, u),
+                            _ => Self::cons(h2.clone(), l1.merge_univs(t2, u)?, u),
+                        },
+                    }
+                },
+            }
+        }
     }
 
     fn sort(&self, tbl: &Huniv) -> IdxResult<Self> {
@@ -694,6 +769,16 @@ impl Univ {
             Univ::cons(a.clone(), l, tbl)
         }
         self.iter().fold(Ok(HList::nil()), |acc, a| aux(a, acc?, tbl))
+    }
+
+    /// Returns the formal universe that is greater than the universes u and v.
+    /// Used to type the products.
+    ///
+    /// NOTE: mutates in place compared to the OCaml implementation.  Could easily
+    /// be fixed not to.
+    pub fn sup(&mut self, y: &Self, tbl: &Huniv) -> IdxResult<()> {
+        *self = self.merge_univs(y, tbl)?;
+        Ok(())
     }
 
     /// Then, checks on universes
@@ -739,9 +824,46 @@ impl Univ {
            self.check_eq_univs(v, g)? ||
            self.real_check_leq(v, g)?)
     }
+
+    fn subst_expr_opt<'a, F>(&Expr(ref l, n): &'a Expr, tbl: &Huniv, fn_: &F) -> SubstResult<Self>
+        where
+            F: Fn(&'a Level) -> Option<&Self>,
+    {
+        Ok(fn_(l).ok_or(SubstError::NotFound)?.addn(n, tbl)?)
+    }
+
+    pub fn subst_universe<'a, F>(&'a self, tbl: &Huniv, fn_: F) -> IdxResult<Self>
+        where
+            F: Fn(&'a Level) -> Option<&Self>,
+    {
+        let mut subst = vec![];
+        let mut nosubst = vec![];
+        for u in self.iter() {
+            match Self::subst_expr_opt(u, tbl, &fn_) {
+                Ok(a) => subst.push(a),
+                Err(SubstError::NotFound) => nosubst.push(u),
+                Err(SubstError::Idx(e)) => return Err(e),
+            }
+        }
+        if subst.is_empty() { Ok(self.clone()) }
+        else {
+            // FIXME: Lots of unnecessary reference counting going on here given that the HLists
+            // are only intermediate structures.
+            let substs = subst.iter()
+                              .fold(Ok(HList::nil()),
+                                    |acc, u| Self::merge_univs(&acc?, u, tbl));
+            nosubst.into_iter()
+                   .fold(substs,
+                         |acc, u| Self::merge_univs(&acc?, &Self::tip(u.clone(), tbl)?, tbl))
+        }
+    }
 }
 
 impl Instance {
+    pub fn empty() -> Self {
+        Array(Arc::from(vec![]))
+    }
+
     pub fn equal(&self, u: &Self) -> bool {
         &***self as *const _ == &***u as *const _ ||
         (self.is_empty() && u.is_empty()) ||
@@ -789,3 +911,9 @@ impl Instance {
         else { Ok(u_.sort(tbl)?) }
     }
 }
+
+/* impl Context {
+    pub fn make(ctx: Instance, cst: Cstrs) -> Self {
+        Context(ctx, cst)
+    }
+} */

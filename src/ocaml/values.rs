@@ -221,7 +221,7 @@ pub type Instance = Array<Level>;
 
 #[derive(Debug, Clone, DeserializeState)]
 #[serde(deserialize_state = "Seed<'de>")]
-pub struct Context(#[serde(deserialize_state)] Instance, #[serde(deserialize_state)] Cstrs);
+pub struct Context(#[serde(deserialize_state)] pub Instance, #[serde(deserialize_state)] pub Cstrs);
 
 pub type AbsContext = Context;
 
@@ -243,7 +243,7 @@ pub enum SortContents {
 #[derive(Debug, Clone,DeserializeState)]
 #[serde(deserialize_state = "Seed<'de>")]
 pub enum Sort {
-    Type(#[serde(deserialize_state)] ORef<Univ>),
+    Type(#[serde(deserialize_state)] Univ),
     Prop(#[serde(deserialize_state)] SortContents),
 }
 
@@ -422,8 +422,8 @@ pub enum Engagement {
 #[derive(Debug, Clone, DeserializeState)]
 #[serde(deserialize_state = "Seed<'de>")]
 pub struct PolArity {
-    #[serde(deserialize_state)] param_levels: List<Opt<Level>>,
-    #[serde(deserialize_state)] level: Univ,
+    #[serde(deserialize_state)] pub param_levels: List<Opt<Level>>,
+    #[serde(deserialize_state)] pub level: Univ,
 }
 
 #[derive(Debug, Clone, DeserializeState)]
@@ -506,7 +506,7 @@ pub enum Wfp {
 #[derive(Debug, Clone, DeserializeState)]
 #[serde(deserialize_state = "Seed<'de>")]
 pub struct MonoIndArity {
-    #[serde(deserialize_state)] user_arity: Constr,
+    #[serde(deserialize_state)] pub user_arity: Constr,
     #[serde(deserialize_state)] sort: Sort,
 }
 
@@ -521,8 +521,8 @@ pub enum IndArity {
 #[serde(deserialize_state = "Seed<'de>")]
 pub struct OneInd {
     #[serde(deserialize_state)] typename: Id,
-    #[serde(deserialize_state)] arity_ctxt: Rctxt,
-    #[serde(deserialize_state)] arity: IndArity,
+    #[serde(deserialize_state)] pub arity_ctxt: Rctxt,
+    #[serde(deserialize_state)] pub arity: IndArity,
     #[serde(deserialize_state)] consnames: Array<Id>,
     #[serde(deserialize_state)] user_lc: Array<Constr>,
     nrealargs: Int,
@@ -560,7 +560,7 @@ pub type MindRecord = Opt<Opt<RecordBody>>;
 #[derive(Debug, Clone, DeserializeState)]
 #[serde(deserialize_state = "Seed<'de>")]
 pub struct IndPack {
-    #[serde(deserialize_state)] packets: Array<OneInd>,
+    #[serde(deserialize_state)] pub packets: Array<OneInd>,
     #[serde(deserialize_state)] pub record: MindRecord,
     #[serde(deserialize_state)] pub finite: Finite,
     ntypes: Int,
@@ -568,8 +568,8 @@ pub struct IndPack {
     pub nparams: Int,
     nparams_rec: Int,
     #[serde(deserialize_state)] params_ctxt: Rctxt,
-    polymorphic: Bool,
-    #[serde(deserialize_state)] universes: Context,
+    pub polymorphic: Bool,
+    #[serde(deserialize_state)] pub universes: Context,
     private: Opt<Bool>,
     #[serde(deserialize_state)] typing_flags: TypingFlags,
 }

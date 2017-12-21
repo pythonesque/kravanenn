@@ -1367,7 +1367,7 @@ impl<'b, 'g> Env<'b, 'g> {
     ///
     /// Recognizing products and arities modulo reduction
 
-    /// NOTE: t1 and t2 must be type-checked beforehand!
+    /// NOTE: c must be type-checked beforehand!
     pub fn dest_prod(&mut self, mut c: Constr) -> ConvResult<(Vec<RDecl>, Constr)> {
         let mut m = Vec::new();
         loop {
@@ -1387,7 +1387,7 @@ impl<'b, 'g> Env<'b, 'g> {
 
     /// The same but preserving lets in the context, not internal ones.
     ///
-    /// Note: t1 and t2 must be type-checked beforehand!
+    /// Note: ty must be type-checked beforehand!
     pub fn dest_prod_assum(&mut self, mut ty: Constr) -> ConvResult<(Vec<RDecl>, Constr)> {
         let mut l = Vec::new();
         loop {
@@ -1421,7 +1421,7 @@ impl<'b, 'g> Env<'b, 'g> {
         }
     }
 
-    /// Note: t1 and t2 must be type-checked beforehand!
+    /// Note: ty must be type-checked beforehand!
     pub fn dest_lam_assum(&mut self, mut ty: Constr) -> ConvResult<(Vec<RDecl>, Constr)> {
         let mut l = Vec::new();
         loop {
@@ -1450,7 +1450,7 @@ impl<'b, 'g> Env<'b, 'g> {
         }
     }
 
-    /// Note: t1 and t2 must be type-checked beforehand!
+    /// Note: c must be type-checked beforehand!
     pub fn dest_arity(&mut self, c: Constr) -> ConvResult<Arity> {
         let (l, c) = self.dest_prod_assum(c)?;
         match c {
