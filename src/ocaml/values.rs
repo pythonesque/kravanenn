@@ -528,7 +528,7 @@ pub struct OneInd {
     nrealargs: Int,
     nrealdecls: Int,
     #[serde(deserialize_state)] kelim: List<SortFam>,
-    #[serde(deserialize_state)] nf_lc: Array<Constr>,
+    #[serde(deserialize_state)] pub nf_lc: Array<Constr>,
     #[serde(deserialize_state)] consnrealargs: Array<Int>,
     #[serde(deserialize_state)] consnrealdecls: Array<Int>,
     #[serde(deserialize_state)] recargs: Wfp,

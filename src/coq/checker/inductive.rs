@@ -426,3 +426,12 @@ impl PUniverses<Cons> {
         self.type_of_constructor_gen(mspec, tbl)
     }
 }
+
+impl PUniverses<MutInd> {
+    pub fn arities_of_specif<'g>(&self, (mib, mip): MindSpecif<'g>,
+                                 tbl: &Huniv) -> SubstResult<Vec<Constr>> {
+        let PUniverses(ref kn, ref u) = *self;
+        let specif = &mip.nf_lc;
+        specif.iter().map( |c| mib.constructor_instantiate(kn, u, c, tbl) ).collect()
+    }
+}
