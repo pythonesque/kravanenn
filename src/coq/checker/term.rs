@@ -647,11 +647,11 @@ impl Constr {
                 let ref c2 = **o2;
                 c1.eq(c2, Cst::eq_con_chk)
             },
-            (&Constr::Ind(ref c1), &Constr::Ind(ref c2)) => c1.eq(c2, Ind::eq_ind_chk),
+            (&Constr::Ind(ref c1), &Constr::Ind(ref c2)) => c1.eq(c2, Ind::eq_chk),
             (&Constr::Construct(ref o1), &Constr::Construct(ref o2)) => {
                 let PUniverses(ref i1, ref u1) = **o1;
                 let PUniverses(ref i2, ref u2) = **o2;
-                i1.idx == i2.idx && i1.ind.eq_ind_chk(&i2.ind) && u1.equal(u2)
+                i1.idx == i2.idx && i1.ind.eq_chk(&i2.ind) && u1.equal(u2)
             },
             (&Constr::Case(ref o1), &Constr::Case(ref o2)) => {
                 let (_, ref p1, ref c1, ref bl1) = **o1;

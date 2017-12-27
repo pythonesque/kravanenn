@@ -80,7 +80,7 @@ pub enum TypeErrorKind {
 }
 
 #[derive(Debug)]
-pub struct TypeError<'e, 'b, 'g>(&'e mut Env<'b, 'g>, TypeErrorKind) where 'b: 'e, 'g: 'b,;
+pub struct TypeError<'e, 'b, 'g>(pub &'e mut Env<'b, 'g>, pub TypeErrorKind) where 'b: 'e, 'g: 'b,;
 
 pub type TypeResult<'e, 'b, 'g, T> = Result<T, Box<TypeError<'e, 'b, 'g>>>;
 

@@ -17,6 +17,7 @@ use coq::checker::type_errors::{
     ArityError,
     error_elim_arity,
     TypeError,
+    TypeErrorKind,
 };
 use coq::checker::univ::{
     Huniv,
@@ -40,6 +41,7 @@ use ocaml::de::{
     ORef,
 };
 use ocaml::values::{
+    CaseInfo,
     Cons,
     Constr,
     // Finite,
@@ -938,6 +940,23 @@ impl PUniverses<Ind> {
                                           nparams)?;
         let ty = c.build_case_type(dep, p, realargs)?;
         Ok((env, lc, ty))
+    }
+}
+
+impl CaseInfo {
+    /// Checking the case case annotation is relevant
+    pub fn check_case_info<'e, 'b, 'g>(&self, env: &'e mut Env<'b, 'g>, indsp: &Ind
+                                      ) -> CaseResult<'e, 'b, 'g, &'e mut Env<'b, 'g>> {
+        let (mib, mip) = if let Some(specif) = env.globals.lookup_mind_specif(indsp)? { specif }
+                         else { return Err(Box::new(CaseError::NotFound)) };
+        if !indsp.eq(&self.ind) ||
+           mib.nparams != self.npar ||
+           mip.consnrealdecls != self.cstr_ndecls ||
+           mip.consnrealargs != self.cstr_nargs {
+            return Err(Box::new(CaseError::Type(Box::new(
+                    TypeError(env, TypeErrorKind::WrongCaseInfo(indsp.clone(), self.clone()))))))
+        }
+        Ok(env)
     }
 }
 

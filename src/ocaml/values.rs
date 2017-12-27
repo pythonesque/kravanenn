@@ -285,8 +285,8 @@ pub struct CPrint {
 pub struct CaseInfo {
     #[serde(deserialize_state)] pub ind: Ind,
     pub npar: Int,
-    #[serde(deserialize_state)] cstr_ndecls: Array<Int>,
-    #[serde(deserialize_state)] cstr_nargs: Array<Int>,
+    #[serde(deserialize_state)] pub cstr_ndecls: Array<Int>,
+    #[serde(deserialize_state)] pub cstr_nargs: Array<Int>,
     #[serde(deserialize_state)] cstr_pp_info: CPrint, // not interpreted by the kernel
 }
 
@@ -529,8 +529,8 @@ pub struct OneInd {
     pub nrealdecls: Int,
     #[serde(deserialize_state)] pub kelim: List<SortFam>,
     #[serde(deserialize_state)] pub nf_lc: Array<Constr>,
-    #[serde(deserialize_state)] consnrealargs: Array<Int>,
-    #[serde(deserialize_state)] consnrealdecls: Array<Int>,
+    #[serde(deserialize_state)] pub consnrealargs: Array<Int>,
+    #[serde(deserialize_state)] pub consnrealdecls: Array<Int>,
     #[serde(deserialize_state)] recargs: Wfp,
     nb_constant: Int,
     nb_args: Int,

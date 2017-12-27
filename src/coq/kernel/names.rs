@@ -299,7 +299,13 @@ impl Cst {
 }
 
 impl Ind {
-    pub fn eq_ind_chk(&self, y: &Self) -> bool {
+    pub fn eq(&self, &Ind { name: ref m2, pos: i2 }: &Self) -> bool {
+        let Ind { name: ref m1, pos: i1 } = *self;
+        // NOTE: because it uses the default MutInd equality, which is Canonical
+        i1 == i2 && KnCan(m1) == KnCan(m2)
+    }
+
+    pub fn eq_chk(&self, y: &Self) -> bool {
         self.pos == y.pos && self.name.eq_mind_chk(&y.name)
     }
 }
