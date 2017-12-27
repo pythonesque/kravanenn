@@ -1,4 +1,5 @@
 // #![feature(placement_in_syntax)]
+// #![feature(nll)]
 #![feature(const_fn)]
 #![feature(rc_downcast)]
 #![feature(try_from)]
@@ -8,6 +9,7 @@
 #![feature(drain_filter)]
 #![feature(generic_param_attrs)]
 #![feature(slice_patterns)]
+#![feature(conservative_impl_trait)]
 extern crate fixedbitset;
 #[macro_use] extern crate serde_state as serde;
 #[macro_use] extern crate serde_derive_state;

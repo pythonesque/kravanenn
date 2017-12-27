@@ -30,6 +30,7 @@ use ocaml::values::{
     // VoDigest,
 };
 use std::borrow::Cow;
+use std::fmt::{self};
 
 /// Environments
 
@@ -58,11 +59,19 @@ pub struct Env<'b, 'g> where 'g: 'b {
     /// want to keep the rest of the Env the same but mutate the Rctxt.  So we might make this
     /// into a &'r mut Rctx<'b> or something.
     /// NOTE: We currently use Vec<RDecl> instead of RCtxt, just because it's somewhat easier
-    /// to deal with.  We can always change it later.
+    /// to deal with.  We can always change it later.  Just keep in mind that the head of the
+    /// list is the last element of the vector.
     pub rel_context: &'b mut Vec<RDecl>,
     pub stratification: Stratification,
     // imports: MpMap<VoDigest>,
 }
+
+impl<'e, 'b, 'g> fmt::Debug for Env<'b, 'g> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Env {{ rdecls: {:?}, ... }}", self.rel_context)
+    }
+}
+
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConstEvaluationResult {

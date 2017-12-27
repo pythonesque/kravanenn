@@ -247,7 +247,7 @@ pub enum Sort {
     Prop(#[serde(deserialize_state)] SortContents),
 }
 
-#[derive(Debug, Clone,DeserializeState)]
+#[derive(Debug, Clone, Copy, DeserializeState, Eq, PartialEq)]
 #[serde(deserialize_state = "Seed<'de>")]
 pub enum SortFam {
     InProp,
@@ -507,7 +507,7 @@ pub enum Wfp {
 #[serde(deserialize_state = "Seed<'de>")]
 pub struct MonoIndArity {
     #[serde(deserialize_state)] pub user_arity: Constr,
-    #[serde(deserialize_state)] sort: Sort,
+    #[serde(deserialize_state)] pub sort: Sort,
 }
 
 #[derive(Debug, Clone, DeserializeState)]
@@ -526,8 +526,8 @@ pub struct OneInd {
     #[serde(deserialize_state)] consnames: Array<Id>,
     #[serde(deserialize_state)] pub user_lc: Array<Constr>,
     nrealargs: Int,
-    nrealdecls: Int,
-    #[serde(deserialize_state)] kelim: List<SortFam>,
+    pub nrealdecls: Int,
+    #[serde(deserialize_state)] pub kelim: List<SortFam>,
     #[serde(deserialize_state)] pub nf_lc: Array<Constr>,
     #[serde(deserialize_state)] consnrealargs: Array<Int>,
     #[serde(deserialize_state)] consnrealdecls: Array<Int>,
@@ -567,7 +567,7 @@ pub struct IndPack {
     #[serde(deserialize_state)] hyps: SectionCtxt,
     pub nparams: Int,
     nparams_rec: Int,
-    #[serde(deserialize_state)] params_ctxt: Rctxt,
+    #[serde(deserialize_state)] pub params_ctxt: Rctxt,
     pub polymorphic: Bool,
     #[serde(deserialize_state)] pub universes: Context,
     private: Opt<Bool>,

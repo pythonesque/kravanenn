@@ -849,10 +849,14 @@ impl Univ {
         else {
             // FIXME: Lots of unnecessary reference counting going on here given that the HLists
             // are only intermediate structures.
+            // TODO: Figure out whether the iterator reversal here is really necessary.
             let substs = subst.iter()
+                              .rev()
                               .fold(Ok(HList::nil()),
                                     |acc, u| Self::merge_univs(&acc?, u, tbl));
+            // TODO: Figure out whether the iterator reversal here is really necessary.
             nosubst.into_iter()
+                   .rev()
                    .fold(substs,
                          |acc, u| Self::merge_univs(&acc?, &Self::tip(u.clone(), tbl)?, tbl))
         }

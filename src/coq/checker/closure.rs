@@ -2495,6 +2495,8 @@ impl Constr {
 }
 
 impl<'id, 'a, 'b, T> Infos<'id, 'b, T> {
+    /// NOTE: This expects rel_context to be in reversed order from the OCaml implementation
+    /// (which is a list that is foldr'd, hence iterated in reverse order).
     fn defined_rels<I>(rel_context: I) -> IdxResult<(u32, VecMap<&'b mut Constr>)>
         where I: Iterator<Item=&'b mut RDecl>
     {
@@ -2517,6 +2519,8 @@ impl<'id, 'a, 'b, T> Infos<'id, 'b, T> {
         Ok((i, rels?))
     }
 
+    /// NOTE: This expects rel_context to be in reversed order from the OCaml implementation
+    /// (which is a list that is foldr'd, hence iterated in reverse order).
     pub fn create<I>(set: Set<'id>, flgs: Reds, rel_context: I) -> IdxResult<Self>
         where I: Iterator<Item=&'b mut RDecl>
     {

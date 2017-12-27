@@ -1,8 +1,9 @@
+pub mod checker;
 pub mod closure;
 pub mod declarations;
 pub mod environ;
 pub mod inductive;
 pub mod reduction;
 pub mod term;
+pub mod type_errors;
 pub mod univ;
-pub mod checker;

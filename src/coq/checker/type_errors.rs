@@ -1,0 +1,96 @@
+use coq::checker::environ::{
+    Env,
+};
+use coq::kernel::esubst::{
+    Idx,
+};
+use ocaml::values::{
+    CaseInfo,
+    Constr,
+    Cstrs,
+    Ind,
+    Int,
+    Name,
+    PUniverses,
+    RDecl,
+    SortFam,
+};
+
+pub type UnsafeJudgment = (Constr, Constr);
+
+/// Type errors.
+
+/// NOTE: NotEnoughAbstractionInFixBody should only occur with "/i" Fix
+/// notation i.
+#[derive(Clone, Debug)]
+pub enum GuardError {
+    /// Fixpoints
+    NotEnoughAbstractionInFixBody,
+    RecursionNotOnInductiveType(Constr),
+    /// We use Vec<RDecl> instead of Env here, because it appears to be the part
+    /// that actually changes during fixpoint typechecking; moreover, Env
+    /// includes some components that might be expensive to copy or have too-
+    /// short lifetimes for error messages.
+    /// (Though it's worth noting that sometimes allocating the Vec may be
+    ///  overly expensive itself, since we sometimes catch errors during
+    ///  fixpoint checks and then ignore the environment... TODO: investigate).
+    RecursionOnIllegalTerm(Int, (Vec<RDecl>, Constr), Vec<Int>, Vec<Int>),
+    NotEnoughArgumentsForFixCall(Int),
+    /// CoFixpoints
+    CoDomainNotInductiveType(Constr),
+    NestedRecursiveOccurrences,
+    UnguardedRecursiveCall(Constr),
+    RecCallInTypeOfAbstraction(Constr),
+    RecCallInNonRecArgOfConstructor(Constr),
+    RecCallInTypeOfDef(Constr),
+    RecCallInCaseFun(Constr),
+    RecCallInCaseArg(Constr),
+    RecCallInCasePred(Constr),
+    NotGuardedForm(Constr),
+    ReturnPredicateNotCoInductive(Constr),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum ArityError {
+    NonInformativeToInformative,
+    StrongEliminationOnNonSmallType,
+    WrongArity,
+}
+
+#[derive(Clone, Debug)]
+pub enum TypeErrorKind {
+    UnboundRel(Idx),
+    // UnboundVar(variable),
+    NotAType(UnsafeJudgment),
+    BadAssumption(UnsafeJudgment),
+    ReferenceVariables(Constr),
+    ElimArity(PUniverses<Ind>, Vec<SortFam>, Constr, UnsafeJudgment,
+              Option<(SortFam, SortFam, ArityError)>),
+    CaseNotInductive(UnsafeJudgment),
+    WrongCaseInfo(Ind, CaseInfo),
+    NumberBranches(UnsafeJudgment, Int),
+    IllFormedBranch(Constr, Int, Constr, Constr),
+    Generalization((Name, Constr), UnsafeJudgment),
+    ActualType(UnsafeJudgment, Constr),
+    CantApplyBadType((Int, Constr, Constr), UnsafeJudgment, Vec<UnsafeJudgment>),
+    CantApplyNonFunctional(UnsafeJudgment, Vec<UnsafeJudgment>),
+    IllFormedRecBody(GuardError, Vec<Name>, Int),
+    IllTypedRecBody(Int, Vec<Name>, Vec<UnsafeJudgment>, Vec<Constr>),
+    UnsatisfiedConstraints(Cstrs),
+}
+
+#[derive(Debug)]
+pub struct TypeError<'e, 'b, 'g>(&'e mut Env<'b, 'g>, TypeErrorKind) where 'b: 'e, 'g: 'b,;
+
+pub type TypeResult<'e, 'b, 'g, T> = Result<T, Box<TypeError<'e, 'b, 'g>>>;
+
+pub fn error_elim_arity<'e, 'b, 'g>(env: &'e mut Env<'b, 'g>,
+                                    ind: PUniverses<Ind>,
+                                    aritylst: Vec<SortFam>,
+                                    c: Constr,
+                                    pj: UnsafeJudgment,
+                                    okinds: Option<(SortFam, SortFam, ArityError)>,
+                                   ) -> Box<TypeError<'e, 'b, 'g>>
+{
+    Box::new(TypeError(env, TypeErrorKind::ElimArity(ind, aritylst, c, pj, okinds)))
+}

@@ -21,9 +21,10 @@ use ocaml::values::{
     RDecl,
     Sort,
     SortContents,
+    SortFam,
     Univ,
 };
-use std::borrow::{Cow};
+use std::borrow::{Borrow, Cow};
 use std::cell::Cell;
 use std::option::{NoneError};
 use std::sync::{Arc};
@@ -78,6 +79,18 @@ impl<'a> Substituend<&'a Constr> {
                 // Recursion is okay here since it can only loop once.
                 self.lift(depth)
             },
+        }
+    }
+}
+
+/// Sorts
+
+impl Sort {
+    pub fn family_of(&self) -> SortFam {
+        match *self {
+            Sort::Prop(SortContents::Null) => SortFam::InProp,
+            Sort::Prop(SortContents::Pos) => SortFam::InSet,
+            Sort::Type(_) => SortFam::InType,
         }
     }
 }
@@ -432,12 +445,20 @@ impl Constr {
         else { self.substrec(&(n, lamv)) }
     }
 
-    pub fn substnl(&self, laml: &[Constr], n: Option<Idx>) -> IdxResult<Constr> {
-        let lamv: Vec<_> = laml.iter().map(Substituend::make).collect();
+    pub fn substnl<'a, T, C>(&self, laml: C, n: Option<Idx>) -> IdxResult<Constr>
+        where
+            C: IntoIterator<Item=&'a T>,
+            T: Borrow<Constr> + 'a,
+    {
+        let lamv: Vec<_> = laml.into_iter().map( |i| Substituend::make(i.borrow()) ).collect();
         self.substn_many(&lamv, n)
     }
 
-    pub fn substl(&self, laml: &[Constr]) -> IdxResult<Constr> {
+    pub fn substl<'a, T, C>(&self, laml: C) -> IdxResult<Constr>
+        where
+            C: IntoIterator<Item=&'a T>,
+            T: Borrow<Constr> + 'a,
+    {
         self.substnl(laml, None)
     }
 
@@ -499,10 +520,20 @@ impl Constr {
         }
     }
 
-    pub fn it_mk_prod_or_let_in(self, ctx: &Rctxt) -> Constr {
-        ctx.iter().fold(self, |c, d| c.mk_prod_or_let_in(d.clone()))
+    pub fn it_mk_prod_or_let_in<I, F, T, E>(self, ctx: I, mut to_owned: F) -> Result<Constr, E>
+        where
+            I: Iterator<Item=Result<T, E>>,
+            F: FnMut(T) -> RDecl,
+    {
+        let mut c = self;
+        for d in ctx {
+            c = c.mk_prod_or_let_in(to_owned(d?));
+        }
+        Ok(c)
     }
 
+    /// NOTE: The Vec<RDecl> is reversed from the Rctxt that would have been returned
+    /// by OCaml.
     pub fn decompose_prod_assum(&self) -> (Vec<RDecl>, &Constr) {
         // TODO: For these sorts of generated definition sets, we don't
         // really need to perform clone() on the Constrs, since they can
@@ -532,11 +563,17 @@ impl Constr {
 
     /// Other term constructors
 
-    pub fn mk_arity(sign: &Rctxt, s: Sort) -> Constr {
+    pub fn mk_arity<'a, I, F, T, E>(sign: I, s: Sort, to_owned: F) -> Result<Constr, E>
+        where
+            I: Iterator<Item=Result<T, E>>,
+            F: FnMut(T) -> RDecl,
+    {
         // FIXME: It seems silly to allocate this here...
-        Constr::Sort(ORef(Arc::from(s))).it_mk_prod_or_let_in(sign)
+        Constr::Sort(ORef(Arc::from(s))).it_mk_prod_or_let_in(sign, to_owned)
     }
 
+    /// NOTE: The Vec<RDecl> is reversed from the Rctxt that would have been returned
+    /// by OCaml.
     pub fn dest_arity(&self) -> Result<(Vec<RDecl>, &Sort), DecomposeError> {
         let (l, c) = self.decompose_prod_assum();
         if let Constr::Sort(ref s) = *c { Ok((l, s)) }
@@ -729,6 +766,42 @@ impl Constr {
             let c_ = aux(self, &(subst, tbl, &changed))?;
             Ok(if changed.get() { Cow::Owned(c_) } else { Cow::Borrowed(self) })
         }
+    }
+}
+
+/// Type of assumptions and contexts
+
+impl RDecl {
+    pub fn map<F, E>(&self, f: F) -> Result<Cow<RDecl>, E>
+        where
+            F: for <'a> Fn(&'a Constr) -> Result<Cow<'a, Constr>, E>,
+    {
+        Ok(match *self {
+            RDecl::LocalAssum(ref n, ref typ) => match f(typ)? {
+                Cow::Borrowed(typ_) if typ as *const _ == typ_ as *const _ => Cow::Borrowed(self),
+                typ_ => Cow::Owned(RDecl::LocalAssum(n.clone(), typ_.into_owned())),
+            },
+            RDecl::LocalDef(ref n, ref body, ref typ) => match (f(body)?, f(typ)?) {
+                (Cow::Borrowed(body_), Cow::Borrowed(typ_))
+                if body as *const _ == body_ as *const _ && &**typ as *const _ == typ_ as *const _
+                    => Cow::Borrowed(self),
+                (body_, typ_) => Cow::Owned(RDecl::LocalDef(n.clone(),
+                                            body_.into_owned(),
+                                            ORef(Arc::from(typ_.into_owned())))),
+            },
+        })
+    }
+}
+
+impl Rctxt {
+    /// NOTE: We change the definition compared to OCaml; instead of a SmartMap,
+    /// this just returns an iterator.
+    ///
+    /// NOTE: This will return RDecls in the usual Rctxt order, *not* reversed order.
+    pub fn subst_instance<'a, 'b>(&'a self, s: &'a Instance, tbl: &'a Huniv) ->
+        impl Iterator<Item=SubstResult<Cow<'a, RDecl>>>
+    {
+        self.iter().map( move |d| d.map( |x| x.subst_instance(s, tbl) ) )
     }
 }
 
