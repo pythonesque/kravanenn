@@ -203,9 +203,9 @@ pub struct Expr(#[serde(deserialize_state)] pub Level, pub Int);
 
 pub type Univ = HList<Expr>;
 
-#[derive(Debug, Clone, DeserializeState)]
+#[derive(Debug, Copy, Clone, DeserializeState, Eq, PartialEq)]
 #[serde(deserialize_state = "Seed<'de>")]
-enum ConstraintType {
+pub enum ConstraintType {
     Lt,
     Le,
     Eq,
@@ -213,7 +213,11 @@ enum ConstraintType {
 
 #[derive(Debug, Clone, DeserializeState)]
 #[serde(deserialize_state = "Seed<'de>")]
-pub struct UnivConstraint(#[serde(deserialize_state)] Level, #[serde(deserialize_state)] ConstraintType, #[serde(deserialize_state)] Level);
+pub struct UnivConstraint(
+    #[serde(deserialize_state)] pub Level,
+    #[serde(deserialize_state)] pub ConstraintType,
+    #[serde(deserialize_state)] pub Level,
+);
 
 pub type Cstrs = Set<UnivConstraint>;
 
@@ -957,5 +961,55 @@ impl<T> ::std::ops::Deref for OVec<T> {
 impl<T> ::std::ops::DerefMut for OVec<T> {
     fn deref_mut(&mut self) -> &mut Vec<T> {
         &mut self.0
+    }
+}
+
+/// An iterator specialized to Sets.
+pub struct SetIter<'a, V> where V: 'a {
+    stack: Vec<&'a ORef<(Set<V>, V, Set<V>, Int)>>,
+    node: &'a Set<V>,
+}
+
+impl<'a, V> SetIter<'a, V> {
+    // TODO: Consider using height for size hint somehow (tree is balanced, so should be useful).
+    fn new(node: &'a Set<V>) -> Self {
+        SetIter {
+            stack: Vec::new(),
+            node: node,
+        }
+    }
+}
+
+impl<'a, V> Iterator for SetIter<'a, V> {
+    type Item = &'a V;
+
+    /// NOTE: order preserving (inorder traversal), though this isn't actually useful to us right
+    /// now.
+    ///
+    /// Also note: if there were a cycle (which there shouldn't be) in the original Set,
+    /// this could loop forever.  But if used as intended (from a DeserializeSeed), this is unlikely
+    /// to happen, since DeserializeSeed will already loop forever in that case...
+    fn next(&mut self) -> Option<&'a V> {
+        loop {
+            match *self.node {
+                Set::Nil => {
+                    let node = if let Some(node) = self.stack.pop() { node } else { return None };
+                    let (_, ref v, ref right, _) = **node;
+                    self.node = right;
+                    return Some(v)
+                },
+                Set::Node(ref node) => {
+                    let (ref left, _, _, _) = **node;
+                    self.stack.push(node);
+                    self.node = left;
+                },
+            }
+        }
+    }
+}
+
+impl<V> Set<V> {
+    pub fn iter<'a>(&'a self) -> SetIter<'a, V> {
+        SetIter::new(self)
     }
 }

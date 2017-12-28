@@ -6,4 +6,5 @@ pub mod inductive;
 pub mod reduction;
 pub mod term;
 pub mod type_errors;
+pub mod typeops;
 pub mod univ;

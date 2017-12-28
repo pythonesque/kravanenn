@@ -10,6 +10,7 @@ use ocaml::de::{
     ORef,
 };
 use ocaml::values::{
+    ConstraintType,
     Expr,
     HList,
     Instance,
@@ -17,6 +18,7 @@ use ocaml::values::{
     Level,
     RawLevel,
     Univ,
+    UnivConstraint,
 };
 use std::cmp::{Ord, Ordering};
 use std::collections::HashMap;
@@ -921,3 +923,24 @@ impl Instance {
         Context(ctx, cst)
     }
 } */
+
+impl Universes {
+    fn check_constraint(&self, &UnivConstraint(ref l, d, ref r): &UnivConstraint
+                       ) -> UnivResult<bool> {
+        match d {
+            ConstraintType::Eq => l.check_equal(r, self),
+            ConstraintType::Le => l.check_smaller(r, false, self),
+            ConstraintType::Lt => l.check_smaller(r, true, self),
+        }
+    }
+
+    pub fn check_constraints<'a, I>(&self, c: I) -> UnivResult<bool>
+        where
+            I: Iterator<Item=&'a UnivConstraint>,
+    {
+        for c in c {
+            if !self.check_constraint(c)? { return Ok(false) }
+        }
+        Ok(true)
+    }
+}

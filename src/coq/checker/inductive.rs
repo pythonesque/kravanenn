@@ -42,9 +42,11 @@ use ocaml::de::{
 };
 use ocaml::values::{
     CaseInfo,
+    CoFix,
     Cons,
     Constr,
     // Finite,
+    Fix,
     List,
     Ind,
     IndArity,
@@ -202,6 +204,12 @@ impl<'e, 'b, 'g> ::std::convert::From<Box<RedError>> for Box<CaseError<'e, 'b, '
     }
 }
 
+impl<'e, 'b, 'g> ::std::convert::From<UnivError> for Box<CaseError<'e, 'b, 'g>> {
+    fn from(e: UnivError) -> Self {
+        Box::new(CaseError::Univ(e))
+    }
+}
+
 impl<'e, 'b, 'g> CaseError<'e, 'b, 'g> {
     fn from_conv<F>(e: Box<ConvError>, make_type_error: F) -> Box<Self>
         where F: FnOnce() -> Box<TypeError<'e, 'b, 'g>>,
@@ -215,6 +223,8 @@ impl<'e, 'b, 'g> CaseError<'e, 'b, 'g> {
             ConvError::NotFound => CaseError::NotFound,
             ConvError::UserError(ref s) => CaseError::UserError(s.clone()),
             ConvError::NotConvertible => CaseError::Type(make_type_error()),
+            // NOTE: Should not actually happen, but seems harmless enough.
+            ConvError::NotConvertibleVect(_) => CaseError::Type(make_type_error()),
         })
     }
 }
@@ -990,4 +1000,31 @@ fn extended_rel_list<'a, I>(hyps: I) -> IdxResult<(Vec<Constr>, Option<Idx>)>
     // a positive i32 (a valid Idx) - 1 is always a non-negative i32 (a valid non-negative Idx).
     // Therefore, the expect() is safe.
     Ok((l, p.checked_sub(Idx::ONE).expect("positive i32 - 1 = non-negative i32")))
+}
+
+/// Guard conditions for fix and cofix-points.
+
+impl Fix {
+    /// NOTE: All Constrs in self should be typechecked beforehand!
+    /// (or, to put it another way, the only part of typechecking left should be to ensure that the
+    /// guard condition holds on all the fixpoint bodies in the block).
+    pub fn check<'e, 'b, 'g>(&self, env: &'e mut Env<'b, 'g>
+                            ) -> CaseResult<'e, 'b, 'g, &'e mut Env<'b, 'g>> {
+        // FIXME: Implement properly (stubbing for now at the recommendation of ppedrot).
+        Ok(env)
+    }
+}
+
+impl CoFix {
+    /// The function which checks that the whole block of definitions satisfies the guarded
+    /// condition.
+    ///
+    /// NOTE: All Constrs in self should be typechecked beforehand!
+    /// (or, to put it another way, the only part of typechecking left should be to ensure that the
+    /// guard condition holds on all the cofixpoint bodies in the block).
+    pub fn check<'e, 'b, 'g>(&self, env: &'e mut Env<'b, 'g>
+                            ) -> CaseResult<'e, 'b, 'g, &'e mut Env<'b, 'g>> {
+        // FIXME: Implement properly (stubbing for now at the recommendation of ppedrot).
+        Ok(env)
+    }
 }

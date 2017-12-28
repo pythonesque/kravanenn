@@ -84,6 +84,16 @@ pub struct TypeError<'e, 'b, 'g>(pub &'e mut Env<'b, 'g>, pub TypeErrorKind) whe
 
 pub type TypeResult<'e, 'b, 'g, T> = Result<T, Box<TypeError<'e, 'b, 'g>>>;
 
+pub fn error_not_type<'e, 'b, 'g>(env: &'e mut Env<'b, 'g>,
+                                  j: UnsafeJudgment) -> Box<TypeError<'e, 'b, 'g>> {
+    Box::new(TypeError(env, TypeErrorKind::NotAType(j)))
+}
+
+pub fn error_assumption<'e, 'b, 'g>(env: &'e mut Env<'b, 'g>,
+                                    j: UnsafeJudgment) -> Box<TypeError<'e, 'b, 'g>> {
+    Box::new(TypeError(env, TypeErrorKind::BadAssumption(j)))
+}
+
 pub fn error_elim_arity<'e, 'b, 'g>(env: &'e mut Env<'b, 'g>,
                                     ind: PUniverses<Ind>,
                                     aritylst: Vec<SortFam>,
@@ -93,4 +103,9 @@ pub fn error_elim_arity<'e, 'b, 'g>(env: &'e mut Env<'b, 'g>,
                                    ) -> Box<TypeError<'e, 'b, 'g>>
 {
     Box::new(TypeError(env, TypeErrorKind::ElimArity(ind, aritylst, c, pj, okinds)))
+}
+
+pub fn error_unsatisfied_constraints<'e, 'b, 'g>(env: &'e mut Env<'b, 'g>,
+                                                 c: Cstrs) -> Box<TypeError<'e, 'b, 'g>> {
+    Box::new(TypeError(env, TypeErrorKind::UnsatisfiedConstraints(c)))
 }

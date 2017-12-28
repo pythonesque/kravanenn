@@ -86,7 +86,7 @@ pub enum ConvError {
     Univ(UnivError),
     Red(Box<RedError>),
     NotConvertible,
-    // NotConvertibleVect(usize),
+    NotConvertibleVect(usize),
     NotFound,
     UserError(String),
 }
@@ -1385,7 +1385,7 @@ impl<'b, 'g> Env<'b, 'g> {
     /// Dealing with arities
     ///
     /// Recognizing products and arities modulo reduction
-
+    ///
     /// NOTE: c must be type-checked beforehand!
     pub fn dest_prod(&mut self, mut c: Constr) -> ConvResult<(Vec<RDecl>, Constr)> {
         let mut m = Vec::new();
