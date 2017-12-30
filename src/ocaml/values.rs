@@ -420,7 +420,7 @@ pub enum LazyConstr {
 /* kernel/declarations */
 
 // static IMPREDICATIVE_SET : ValueS = ENUM!("impr-set", 2);
-#[derive(Debug, Clone, DeserializeState)]
+#[derive(Debug, Clone, Copy, DeserializeState, Eq, PartialEq)]
 #[serde(deserialize_state = "Seed<'de>")]
 pub enum Engagement {
     ImpredicativeSet,

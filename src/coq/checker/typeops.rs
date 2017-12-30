@@ -30,9 +30,11 @@ use ocaml::values::{
     Constr,
     Cst,
     CstType,
+    Engagement,
     PUniverses,
     RDecl,
     Sort,
+    SortContents,
     Univ,
     UnivConstraint,
 };
@@ -257,5 +259,48 @@ impl<'b, 'g> Env<'b, 'g> {
             }
         }
         return Ok((self, typ))
+    }
+
+    /// Type of product
+    fn sort_of_product<'a>(&self, domsort: &Sort, rangsort: &'a Sort) -> IdxResult<Cow<'a, Sort>> {
+        Ok(match (domsort, rangsort) {
+            // Product rule (s, Prop, Prop)
+            (_, &Sort::Prop(SortContents::Null)) => Cow::Borrowed(rangsort),
+            // Product rule (Prop/Set,Set,Set)
+            (&Sort::Prop(_), &Sort::Prop(SortContents::Pos)) => Cow::Borrowed(rangsort),
+            // Product rule (Type,Set,?)
+            (&Sort::Type(ref u1), &Sort::Prop(SortContents::Pos)) =>
+                if let Engagement::ImpredicativeSet = *self.stratification.engagement() {
+                    // Rule is (Type,Set,Set) in the Set-impredicative calculus
+                    Cow::Borrowed(rangsort)
+                } else {
+                    // Rule is (Type_i,Set,Type_i) in the Set-predicative calculus
+                    // FIXME: Because we mutate the first argument in-place, we swap the argument
+                    // order here compared to the OCaml implementation.  Hopefully, this doesn't
+                    // affect the result of sup in any significant way (it *shouldn't*, I think),
+                    // but we need to double check this.
+                    let mut u0 = Univ::type0(&self.globals.univ_hcons_tbl);
+                    u0.sup(u1, &self.globals.univ_hcons_tbl)?;
+                    Cow::Owned(Sort::Type(u0))
+                },
+            // Product rule (Set,Type_i,Type_i)
+            (&Sort::Prop(SortContents::Pos), &Sort::Type(ref u2)) => {
+                let mut u0 = Univ::type0(&self.globals.univ_hcons_tbl);
+                u0.sup(u2, &self.globals.univ_hcons_tbl)?;
+                Cow::Owned(Sort::Type(u0))
+            },
+            // Product rule (Prop,Type_i,Type_i)
+            (&Sort::Prop(SortContents::Null), &Sort::Type(_)) => Cow::Borrowed(rangsort),
+            // Product rule (Type_i,Type_i,Type_i)
+            (&Sort::Type(ref u1), &Sort::Type(ref u2)) => {
+                // NOTE: The way sup (really merge_univs) is currently written, this clone is
+                // somewhat extraneous...
+                // TODO: see if merge_univs can be fixed to exploit mutability of one of its
+                // arguments.
+                let mut u1 = u1.clone();
+                u1.sup(u2, &self.globals.univ_hcons_tbl)?;
+                Cow::Owned(Sort::Type(u1))
+            },
+        })
     }
 }
