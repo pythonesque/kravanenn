@@ -73,7 +73,7 @@ pub enum TypeErrorKind {
     IllFormedBranch(Constr, Int, Constr, Constr),
     Generalization((Name, Constr), UnsafeJudgment),
     ActualType(UnsafeJudgment, Constr),
-    CantApplyBadType((Int, Constr, Constr), UnsafeJudgment, Vec<UnsafeJudgment>),
+    CantApplyBadType((usize, Constr, Constr), UnsafeJudgment, Vec<UnsafeJudgment>),
     CantApplyNonFunctional(UnsafeJudgment, Vec<UnsafeJudgment>),
     IllFormedRecBody(GuardError, Vec<Name>, Int),
     IllTypedRecBody(Int, Vec<Name>, Vec<UnsafeJudgment>, Vec<Constr>),
@@ -109,6 +109,19 @@ pub fn error_elim_arity<'e, 'b, 'g>(env: &'e mut Env<'b, 'g>,
                                    ) -> Box<TypeError<'e, 'b, 'g>>
 {
     Box::new(TypeError(env, TypeErrorKind::ElimArity(ind, aritylst, c, pj, okinds)))
+}
+
+pub fn error_cant_apply_not_functional<'e, 'b, 'g>(env: &'e mut Env<'b, 'g>,
+                                                   rator: UnsafeJudgment,
+                                                   randl: Vec<UnsafeJudgment>,
+                                                  ) -> Box<TypeError<'e, 'b, 'g>> {
+    Box::new(TypeError(env, TypeErrorKind::CantApplyNonFunctional(rator, randl)))
+}
+
+pub fn error_cant_apply_bad_type<'e, 'b, 'g>(env: &'e mut Env<'b, 'g>, t: (usize, Constr, Constr),
+                                             rator: UnsafeJudgment, randl: Vec<UnsafeJudgment>,
+                                            ) -> Box<TypeError<'e, 'b, 'g>> {
+    Box::new(TypeError(env, TypeErrorKind::CantApplyBadType(t, rator, randl)))
 }
 
 pub fn error_unsatisfied_constraints<'e, 'b, 'g>(env: &'e mut Env<'b, 'g>,

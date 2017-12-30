@@ -234,7 +234,13 @@ impl<'e, 'b, 'g> ::std::convert::From<Box<SpecialRedError>> for Box<CaseError<'e
 }
 
 impl<'e, 'b, 'g> CaseError<'e, 'b, 'g> {
-    fn from_conv<F>(e: Box<ConvError>, make_type_error: F) -> Box<Self>
+    /// A new method not in the OCaml implementation, designed to ease the detection of conversion
+    /// errors.
+    ///
+    /// Returns the CaseError equivalent for every ConvError variant except for NotConvertible,
+    /// for which it calls `make_type_error` to get a new type error (it also does this on
+    /// NotConvertibleVect at the moment, but this is likely temporary).
+    pub fn from_conv<F>(e: Box<ConvError>, make_type_error: F) -> Box<Self>
         where F: FnOnce() -> Box<TypeError<'e, 'b, 'g>>,
     {
         Box::new(match *e {

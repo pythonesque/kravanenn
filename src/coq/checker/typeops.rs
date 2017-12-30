@@ -13,6 +13,8 @@ use coq::checker::reduction::{
 };
 use coq::checker::type_errors::{
     error_assumption,
+    error_cant_apply_bad_type,
+    error_cant_apply_not_functional,
     error_not_type,
     error_unbound_rel,
     error_unsatisfied_constraints,
@@ -222,5 +224,38 @@ impl<'b, 'g> Env<'b, 'g> {
     fn judge_of_constant<'e>(&'e mut self, cst: &PUniverses<Cst>) ->
         CaseResult<'e, 'b, 'g, (&'e mut Self, Cow<'g, Constr>)> {
         self.judge_of_constant_knowing_parameters(cst, &[])
+    }
+
+    /// Type of an application.
+    ///
+    /// NOTE: funj and both sides of each judgment in argjv must be typechecked beforehand!
+    fn judge_of_apply<'e>(&'e mut self, f: &Constr, funj: &Constr, argjv: &[(&Constr, &Constr)]
+                         ) -> CaseResult<'e, 'b, 'g, (&'e mut Self, Constr)> {
+        let mut typ = funj.clone(); // We remember the old funj for error reporting purposes.
+        for (n, &(h, hj)) in argjv.into_iter().enumerate() {
+            typ.whd_all(self)?; // Mutates in-place
+            match typ {
+                Constr::Prod(o) => {
+                    let (_, ref c1, ref c2) = *o;
+                    if let Err(e) = self.conv(hj, c1) {
+                        return Err(CaseError::from_conv(e, move ||
+                            // NOTE: n + 1 is always in-bounds for usize because argjv.len() must
+                            // be isize::MAX or smaller (provided pointers are at least 1 byte).
+                            error_cant_apply_bad_type(
+                                self, (n + 1, (*c1).clone(), hj.clone()),
+                                (f.clone(), funj.clone()),
+                                argjv.into_iter().map( |&(h, hj)| (h.clone(), hj.clone()))
+                                     .collect())))
+                    }
+                    typ = c2.subst1(h)?;
+                },
+                _ => return Err(Box::new(CaseError::Type(
+                        error_cant_apply_not_functional(
+                            self, (f.clone(), funj.clone()),
+                            argjv.into_iter().map( |&(h, hj)| (h.clone(), hj.clone())).collect())))
+                    ),
+            }
+        }
+        return Ok((self, typ))
     }
 }
