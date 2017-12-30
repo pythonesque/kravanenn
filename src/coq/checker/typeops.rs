@@ -8,10 +8,12 @@ use coq::checker::inductive::{
 };
 use coq::checker::reduction::{
     ConvError,
+    ConvPb,
     ConvResult,
     SpecialRedResult,
 };
 use coq::checker::type_errors::{
+    error_actual_type,
     error_assumption,
     error_cant_apply_bad_type,
     error_cant_apply_not_functional,
@@ -27,6 +29,7 @@ use ocaml::de::{
     ORef,
 };
 use ocaml::values::{
+    Cast,
     Constr,
     Cst,
     CstType,
@@ -302,5 +305,29 @@ impl<'b, 'g> Env<'b, 'g> {
                 Cow::Owned(Sort::Type(u1))
             },
         })
+    }
+
+    /// Type of a type cast
+    /// `[judge_of_cast env (c,typ1) (typ2,s)]` implements the rule
+    ///
+    /// ```
+    /// env |- c:typ1    env |- typ2:s    env |- typ1 <= typ2
+    ///  ---------------------------------------------------------------------
+    ///       env |- c:typ2
+    /// ```
+    fn judge_of_cast<'e>(&'e mut self, c: &Constr, cj: &Constr, k: Cast,
+                         tj: &Constr) -> CaseResult<'e, 'b, 'g, &'e mut Self> {
+        let conversion = match k {
+            Cast::VMCast | Cast::NATIVECast => self.vm_conv(ConvPb::Cumul, cj, tj),
+            Cast::DEFAULTCast => self.conv_leq(cj, tj),
+            // FIXME: Figure out why we should even have to try to handle this case;
+            //        it shouldn't be possible to load this from a .vo file!
+            Cast::RevertCast => panic!("This should *never* appear in a .vo file!"),
+        };
+        match conversion {
+            Ok(()) => Ok(self),
+            Err(e) => Err(CaseError::from_conv(e, move ||
+                error_actual_type(self, (c.clone(), cj.clone()), tj.clone()))),
+        }
     }
 }

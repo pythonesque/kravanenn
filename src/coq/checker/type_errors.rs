@@ -111,6 +111,11 @@ pub fn error_elim_arity<'e, 'b, 'g>(env: &'e mut Env<'b, 'g>,
     Box::new(TypeError(env, TypeErrorKind::ElimArity(ind, aritylst, c, pj, okinds)))
 }
 
+pub fn error_actual_type<'e, 'b, 'g>(env: &'e mut Env<'b, 'g>, j: UnsafeJudgment,
+                                     expty: Constr) -> Box<TypeError<'e, 'b, 'g>> {
+    Box::new(TypeError(env, TypeErrorKind::ActualType(j, expty)))
+}
+
 pub fn error_cant_apply_not_functional<'e, 'b, 'g>(env: &'e mut Env<'b, 'g>,
                                                    rator: UnsafeJudgment,
                                                    randl: Vec<UnsafeJudgment>,
