@@ -7,14 +7,15 @@ use coq::kernel::esubst::{
 use ocaml::values::{
     CaseInfo,
     Constr,
-    Cstrs,
     Ind,
     Int,
     Name,
     PUniverses,
     RDecl,
     SortFam,
+    UnivConstraint,
 };
+use std::collections::{HashSet};
 
 pub type UnsafeJudgment = (Constr, Constr);
 
@@ -76,13 +77,18 @@ pub enum TypeErrorKind {
     CantApplyNonFunctional(UnsafeJudgment, Vec<UnsafeJudgment>),
     IllFormedRecBody(GuardError, Vec<Name>, Int),
     IllTypedRecBody(Int, Vec<Name>, Vec<UnsafeJudgment>, Vec<Constr>),
-    UnsatisfiedConstraints(Cstrs),
+    UnsatisfiedConstraints(HashSet<UnivConstraint>),
 }
 
 #[derive(Debug)]
 pub struct TypeError<'e, 'b, 'g>(pub &'e mut Env<'b, 'g>, pub TypeErrorKind) where 'b: 'e, 'g: 'b,;
 
 pub type TypeResult<'e, 'b, 'g, T> = Result<T, Box<TypeError<'e, 'b, 'g>>>;
+
+pub fn error_unbound_rel<'e, 'b, 'g>(env: &'e mut Env<'b, 'g>,
+                                     n: Idx) -> Box<TypeError<'e, 'b, 'g>> {
+    Box::new(TypeError(env, TypeErrorKind::UnboundRel(n)))
+}
 
 pub fn error_not_type<'e, 'b, 'g>(env: &'e mut Env<'b, 'g>,
                                   j: UnsafeJudgment) -> Box<TypeError<'e, 'b, 'g>> {
@@ -106,6 +112,7 @@ pub fn error_elim_arity<'e, 'b, 'g>(env: &'e mut Env<'b, 'g>,
 }
 
 pub fn error_unsatisfied_constraints<'e, 'b, 'g>(env: &'e mut Env<'b, 'g>,
-                                                 c: Cstrs) -> Box<TypeError<'e, 'b, 'g>> {
+                                                 c: HashSet<UnivConstraint>,
+                                                ) -> Box<TypeError<'e, 'b, 'g>> {
     Box::new(TypeError(env, TypeErrorKind::UnsatisfiedConstraints(c)))
 }

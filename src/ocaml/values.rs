@@ -203,7 +203,9 @@ pub struct Expr(#[serde(deserialize_state)] pub Level, pub Int);
 
 pub type Univ = HList<Expr>;
 
-#[derive(Debug, Copy, Clone, DeserializeState, Eq, PartialEq)]
+/// NOTE: we auto-derive Hash to make it easy to work with sets of constraints, since we use a
+/// HashSet (unlike the OCaml implementation, which uses a CSet).
+#[derive(Debug, Copy, Clone, DeserializeState, Eq, Hash, PartialEq)]
 #[serde(deserialize_state = "Seed<'de>")]
 pub enum ConstraintType {
     Lt,
@@ -211,7 +213,9 @@ pub enum ConstraintType {
     Eq,
 }
 
-#[derive(Debug, Clone, DeserializeState)]
+/// NOTE: we auto-derive Hash to make it easy to work with sets of constraints, since we use a
+/// HashSet (unlike the OCaml implementation, which uses a CSet).
+#[derive(Debug, Clone, DeserializeState, Hash)]
 #[serde(deserialize_state = "Seed<'de>")]
 pub struct UnivConstraint(
     #[serde(deserialize_state)] pub Level,

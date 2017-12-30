@@ -1,7 +1,11 @@
 use coq::checker::univ::{
     Huniv,
     SubstError,
+    SubstResult,
     Universes,
+};
+use coq::kernel::esubst::{
+    Idx,
 };
 use coq::kernel::names::{
     CMapEnv,
@@ -16,10 +20,12 @@ use ocaml::values::{
     Cb,
     Constr,
     Cst,
+    CstType,
     CstDef,
     Engagement,
     Ind,
     IndPack,
+    Instance,
     Kn,
     // ModType,
     // Module,
@@ -27,9 +33,11 @@ use ocaml::values::{
     PUniverses,
     // Rctxt,
     RDecl,
+    UnivConstraint,
     // VoDigest,
 };
 use std::borrow::Cow;
+use std::collections::{HashSet};
 use std::fmt::{self};
 
 /// Environments
@@ -94,12 +102,55 @@ impl ::std::convert::From<SubstError> for ConstEvaluationResult {
     }
 }
 
+impl Cb {
+    fn constraints_of(&self, u: &Instance) -> SubstResult<HashSet<UnivConstraint>> {
+        let univs = &self.universes;
+        univs.1.subst_instance(u)
+    }
+}
+
+impl CstType {
+    /// NOTE: Panics if self is not a RegularArity.
+    fn map_regular_arity<F, E>(&self, f: F) -> Result<Cow<Self>, E>
+        where
+            F: FnOnce(&Constr) -> Result<Cow<Constr>, E>,
+    {
+        match *self {
+            CstType::RegularArity(ref a) => f(a).map( |a_| match a_ {
+                Cow::Borrowed(a_) if a_ as *const _ == a as *const _ => Cow::Borrowed(self),
+                a_ => Cow::Owned(CstType::RegularArity(a_.into_owned())),
+            }),
+            CstType::TemplateArity(_) => panic!("map_regular_arity: expected a RegularArity."),
+        }
+    }
+}
+
 impl<'g> Globals<'g> where {
     /// Constants
 
     /// Global constants
     pub fn lookup_constant(&self, c: &Cst) -> Option<&'g Cb> {
         self.constants.get(&KnUser(c)).map( |&cb| cb )
+    }
+
+    /// constant_type gives the type of a constant
+    ///
+    /// NOTE: Unlike the OCaml implementation, this returns None if the constant is not found,
+    /// rather than throwing Not_found.
+    ///
+    /// NOTE: Panics if the looked-up constant body cb has cb.polymorphic true,
+    /// but cb.ty is not a RegularArity.
+    pub fn constant_type(&self, cons: &PUniverses<Cst>
+                        ) -> Option<SubstResult<(Cow<'g, CstType>, HashSet<UnivConstraint>)>> {
+        let PUniverses(ref kn, ref u) = *cons;
+        self.lookup_constant(kn)
+            .map( |cb| {
+                if cb.polymorphic {
+                    let csts = cb.constraints_of(u)?;
+                    cb.ty.map_regular_arity( |c| c.subst_instance(u, &self.univ_hcons_tbl) )
+                      .map( |ty| (ty, csts) )
+                } else { Ok((Cow::Borrowed(&cb.ty), HashSet::new())) }
+            })
     }
 
     pub fn constant_value(&self, o: &PUniverses<Cst>) ->
@@ -177,6 +228,21 @@ impl Stratification {
 }
 
 impl<'b, 'g> Env<'b, 'g> {
+    /// Rel context
+
+    pub fn lookup_rel(&self, n: Idx) -> Option<&RDecl> {
+        // Casts from u32 to usize are always legal (TODO: verify this).
+        let n = u32::from(n) as usize;
+        // Unlike the OCaml implementation, we can just index directly into rel_context.  We
+        // just have to take into account that rel_context is reversed from the OCaml
+        // implementation; instead of the nth element of the list, it's the rel_context.len() - nth
+        // element of the list.  If the subtraction succeeded, we know that 0 ≤ idx, and since
+        // idx = self.rel_context.len() - n where n is positive, idx < self.rel_context.len(),
+        // so idx is in bounds for self.rel_context; hence, the array index should always
+        // succeed inside the map.
+        self.rel_context.len().checked_sub(n).map( |idx| &self.rel_context[idx] )
+    }
+
     pub fn push_rel(&mut self, d: RDecl) {
         self.rel_context.push(d);
     }

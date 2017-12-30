@@ -11,6 +11,7 @@ use ocaml::de::{
 };
 use ocaml::values::{
     ConstraintType,
+    Cstrs,
     Expr,
     HList,
     Instance,
@@ -21,7 +22,7 @@ use ocaml::values::{
     UnivConstraint,
 };
 use std::cmp::{Ord, Ordering};
-use std::collections::HashMap;
+use std::collections::{HashSet, HashMap};
 use std::option::{NoneError};
 use std::sync::{Arc};
 
@@ -567,6 +568,19 @@ impl Level {
                || (arcu.is_leq(arcv, g)?))
         }
     }
+
+    /// Substitute instance inst for ctx in csts
+    fn subst_instance(&self, s: &Instance) -> SubstResult<Level> {
+        Ok(match self.data {
+            RawLevel::Var(n) => {
+                // TODO: Check whether this get is handled at typechecking time?
+                let n = usize::try_from(n).map_err(IdxError::from)?;
+                // TODO: Check whether this is checked at typechecking time?
+                s.get(n).ok_or(SubstError::NotFound)?
+            },
+            _ => self,
+        }.clone())
+    }
 }
 
 impl Expr {
@@ -665,7 +679,6 @@ impl Expr {
         }
         return Ok(false)
     }
-
 }
 
 impl Univ {
@@ -692,6 +705,14 @@ impl Univ {
         // We know the hash for the lower levels of the hierarchy won't overflow,
         // so it's okay to unwrap it.
         Self::tip(Expr::SET, u).unwrap()
+    }
+
+    /// When typing [Prop] and [Set], there is no constraint on the level,
+    /// hence the definition of [type1_univ], the type of [Prop]
+    pub fn type1(u: &Huniv) -> Self {
+        // We know the hash for the lower levels of the hierarchy won't overflow,
+        // so it's okay to unwrap it.
+        Self::tip(Expr::SET.successor().unwrap(), u).unwrap()
     }
 
     pub fn is_type0m(&self) -> bool {
@@ -827,6 +848,12 @@ impl Univ {
            self.real_check_leq(v, g)?)
     }
 
+    pub fn subst_instance(&self, s: &Instance, tbl: &Huniv) -> SubstResult<Univ> {
+        let u_ = self.smart_map( |x| x.map( |u| u.subst_instance(s), &()), tbl)?;
+        if self.hequal(&u_) { Ok(u_) }
+        else { Ok(u_.sort(tbl)?) }
+    }
+
     fn subst_expr_opt<'a, F>(&Expr(ref l, n): &'a Expr, tbl: &Huniv, fn_: &F) -> SubstResult<Self>
         where
             F: Fn(&'a Level) -> Option<&Self>,
@@ -834,7 +861,7 @@ impl Univ {
         Ok(fn_(l).ok_or(SubstError::NotFound)?.addn(n, tbl)?)
     }
 
-    pub fn subst_universe<'a, F>(&'a self, tbl: &Huniv, fn_: F) -> IdxResult<Self>
+    pub fn subst_univs<'a, F>(&'a self, tbl: &Huniv, fn_: F) -> IdxResult<Self>
         where
             F: Fn(&'a Level) -> Option<&Self>,
     {
@@ -894,27 +921,8 @@ impl Instance {
 
     /// Substitution functions
 
-    /// Substitute instance inst for ctx in csts
-    fn subst_instance_level(&self, l: &Level) -> SubstResult<Level> {
-        Ok(match l.data {
-            RawLevel::Var(n) => {
-                // TODO: Check whether this get is handled at typechecking time?
-                let n = usize::try_from(n).map_err(IdxError::from)?;
-                // TODO: Check whether this is checked at typechecking time?
-                self.get(n).ok_or(SubstError::NotFound)?
-            },
-            _ => l,
-        }.clone())
-    }
-
-    pub fn subst_instance(&self, i: &Instance) -> SubstResult<Instance> {
-        i.smart_map( |l| self.subst_instance_level(l), Level::hequal)
-    }
-
-    pub fn subst_universe(&self, u: &Univ, tbl: &Huniv) -> SubstResult<Univ> {
-        let u_ = u.smart_map( |x| x.map( |u| self.subst_instance_level(u), &()), tbl)?;
-        if u.hequal(&u_) { Ok(u_) }
-        else { Ok(u_.sort(tbl)?) }
+    pub fn subst_instance(&self, s: &Instance) -> SubstResult<Instance> {
+        self.smart_map( |l| l.subst_instance(s), Level::hequal)
     }
 }
 
@@ -942,5 +950,41 @@ impl Universes {
             if !self.check_constraint(c)? { return Ok(false) }
         }
         Ok(true)
+    }
+}
+
+impl UnivConstraint {
+    fn subst_instance(&self, s: &Instance) -> SubstResult<Self> {
+        let UnivConstraint(ref u, d, ref v) = *self;
+        let u_ = u.subst_instance(s)?;
+        let v_ = v.subst_instance(s)?;
+        // Ok(if u.hequal(u_) && v.hequal(v_) { Cow::Borrowed(self) }
+        //    else { Cow::Owned(UnivConstraint(u_, d, v_)) })
+        Ok(UnivConstraint(u_, d, v_))
+    }
+}
+
+/// For use in Constraint.
+/// TODO: Consider replacing this with a UnivConstraintKey wrapper, once it's been ascertained that
+/// this won't cause problems.
+impl PartialEq for UnivConstraint {
+    fn eq(&self, &UnivConstraint(ref u_, c_, ref v_): &Self) -> bool {
+        // Inlined version of UConstraintOrd.compare where we only care whether comparison is 0.
+        let UnivConstraint(ref u, c, ref v) = *self;
+        // constraint_type_ord == 0 is the same as structural equality for ConstraintType.
+        c == c_ &&
+        // Level.compare == 0 is the same as Level.equal.
+        u.equal(u_) && v.equal(v_)
+    }
+}
+
+/// For use in Constraint.
+/// TODO: Consider replacing this with a UnivConstraintKey wrapper, once it's been ascertained that
+/// this won't cause problems.
+impl Eq for UnivConstraint {}
+
+impl Cstrs {
+    pub fn subst_instance(&self, s: &Instance) -> SubstResult<HashSet<UnivConstraint>> {
+        self.iter().map( |c| c.subst_instance(s) ).collect()
     }
 }

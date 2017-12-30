@@ -79,6 +79,14 @@ enum ZL<'id, 'a, 'b> where 'b: 'a, 'id: 'a {
 struct LftConstrStack<'id, 'a, 'b>(Vec<ZL<'id, 'a, 'b>>) where 'b: 'a, 'id: 'a;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SpecialRedError {
+    Anomaly(String),
+    Idx(IdxError),
+    Red(Box<RedError>),
+    UserError(String),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ConvError {
     Anomaly(String),
     Env(EnvError),
@@ -88,7 +96,6 @@ pub enum ConvError {
     NotConvertible,
     NotConvertibleVect(usize),
     NotFound,
-    UserError(String),
 }
 
 #[derive(Clone,Copy,Debug,Eq,PartialEq)]
@@ -96,6 +103,8 @@ pub enum ConvPb {
   Conv,
   Cumul,
 }
+
+pub type SpecialRedResult<T> = Result<T, Box<SpecialRedError>>;
 
 pub type ConvResult<T> = Result<T, Box<ConvError>>;
 
@@ -167,6 +176,18 @@ impl ::std::convert::From<UnivError> for Box<ConvError> {
 impl ::std::convert::From<Box<RedError>> for Box<ConvError> {
     fn from(e: Box<RedError>) -> Self {
         Box::new(ConvError::Red(e))
+    }
+}
+
+impl ::std::convert::From<IdxError> for Box<SpecialRedError> {
+    fn from(e: IdxError) -> Self {
+        Box::new(SpecialRedError::Idx(e))
+    }
+}
+
+impl ::std::convert::From<Box<RedError>> for Box<SpecialRedError> {
+    fn from(e: Box<RedError>) -> Self {
+        Box::new(SpecialRedError::Red(e))
     }
 }
 
@@ -1361,21 +1382,21 @@ impl<'b, 'g> Env<'b, 'g> {
     /// error message.
     ///
     /// NOTE: t must be typechecked beforehand!
-    fn hnf_prod_app(&mut self, mut t: Constr, n: &Constr) -> ConvResult<Constr> {
+    fn hnf_prod_app(&mut self, mut t: Constr, n: &Constr) -> SpecialRedResult<Constr> {
         t.whd_all(self)?;
         match t {
             Constr::Prod(o) => {
                 let (_, _, ref b) = *o;
                 Ok(b.subst1(n)?)
             },
-            _ => Err(Box::new(ConvError::Anomaly("hnf_prod_app: Need a product".into()))),
+            _ => Err(Box::new(SpecialRedError::Anomaly("hnf_prod_app: Need a product".into()))),
         }
     }
 
     /// Pseudo-reduction rule  Prod(x,A,B) a --> B[x\a]
     ///
     /// NOTE: t must be typechecked beforehand!
-    pub fn hnf_prod_applist(&mut self, mut t: Constr, nl: &[Constr]) -> ConvResult<Constr> {
+    pub fn hnf_prod_applist(&mut self, mut t: Constr, nl: &[Constr]) -> SpecialRedResult<Constr> {
         for n in nl.iter().rev() {
             t = self.hnf_prod_app(t, n)?;
         }
@@ -1387,7 +1408,7 @@ impl<'b, 'g> Env<'b, 'g> {
     /// Recognizing products and arities modulo reduction
     ///
     /// NOTE: c must be type-checked beforehand!
-    pub fn dest_prod(&mut self, mut c: Constr) -> ConvResult<(Vec<RDecl>, Constr)> {
+    pub fn dest_prod(&mut self, mut c: Constr) -> RedResult<(Vec<RDecl>, Constr)> {
         let mut m = Vec::new();
         loop {
             c.whd_all(self)?;
@@ -1407,7 +1428,7 @@ impl<'b, 'g> Env<'b, 'g> {
     /// The same but preserving lets in the context, not internal ones.
     ///
     /// Note: ty must be type-checked beforehand!
-    pub fn dest_prod_assum(&mut self, mut ty: Constr) -> ConvResult<(Vec<RDecl>, Constr)> {
+    pub fn dest_prod_assum(&mut self, mut ty: Constr) -> RedResult<(Vec<RDecl>, Constr)> {
         let mut l = Vec::new();
         loop {
             ty.whd_allnolet(self)?;
@@ -1441,7 +1462,7 @@ impl<'b, 'g> Env<'b, 'g> {
     }
 
     /// Note: ty must be type-checked beforehand!
-    pub fn dest_lam_assum(&mut self, mut ty: Constr) -> ConvResult<(Vec<RDecl>, Constr)> {
+    pub fn dest_lam_assum(&mut self, mut ty: Constr) -> RedResult<(Vec<RDecl>, Constr)> {
         let mut l = Vec::new();
         loop {
             ty.whd_allnolet(self)?;
@@ -1470,11 +1491,11 @@ impl<'b, 'g> Env<'b, 'g> {
     }
 
     /// Note: c must be type-checked beforehand!
-    pub fn dest_arity(&mut self, c: Constr) -> ConvResult<Arity> {
+    pub fn dest_arity(&mut self, c: Constr) -> SpecialRedResult<Arity> {
         let (l, c) = self.dest_prod_assum(c)?;
         match c {
             Constr::Sort(s) => Ok((l, s)),
-            _ => Err(Box::new(ConvError::UserError("Not an arity".into()))),
+            _ => Err(Box::new(SpecialRedError::UserError("Not an arity".into()))),
         }
     }
 }

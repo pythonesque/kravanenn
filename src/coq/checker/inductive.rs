@@ -1,5 +1,6 @@
 use coq::checker::closure::{
     RedError,
+    RedResult,
 };
 use coq::checker::environ::{
     Env,
@@ -8,7 +9,8 @@ use coq::checker::environ::{
 };
 use coq::checker::reduction::{
     ConvError,
-    ConvResult,
+    SpecialRedError,
+    SpecialRedResult,
 };
 use coq::checker::term::{
     DecomposeError,
@@ -79,7 +81,7 @@ pub enum IndError {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum IndEvaluationError {
     Subst(SubstError),
-    Conv(Box<ConvError>),
+    SpecialRed(Box<SpecialRedError>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -107,6 +109,7 @@ pub enum CaseError<'e, 'b, 'g> where 'b: 'e, 'g: 'b, {
     Subst(SubstError),
     Type(Box<TypeError<'e, 'b, 'g>>),
     Error(String),
+    Failure(String),
 }
 
 pub type IndResult<T> = Result<T, IndError>;
@@ -131,9 +134,9 @@ impl ::std::convert::From<IdxError> for IndError {
     }
 }
 
-impl ::std::convert::From<Box<ConvError>> for IndEvaluationError {
-    fn from(e: Box<ConvError>) -> Self {
-        IndEvaluationError::Conv(e)
+impl ::std::convert::From<Box<SpecialRedError>> for IndEvaluationError {
+    fn from(e: Box<SpecialRedError>) -> Self {
+        IndEvaluationError::SpecialRed(e)
     }
 }
 
@@ -198,6 +201,15 @@ impl<'e, 'b, 'g> ::std::convert::From<IndError> for Box<CaseError<'e, 'b, 'g>> {
     }
 }
 
+impl<'e, 'b, 'g> ::std::convert::From<IndEvaluationError> for Box<CaseError<'e, 'b, 'g>> {
+    fn from(e: IndEvaluationError) -> Self {
+        match e {
+            IndEvaluationError::Subst(e) => Box::new(CaseError::Subst(e)),
+            IndEvaluationError::SpecialRed(e) => e.into(),
+        }
+    }
+}
+
 impl<'e, 'b, 'g> ::std::convert::From<Box<RedError>> for Box<CaseError<'e, 'b, 'g>> {
     fn from(e: Box<RedError>) -> Self {
         Box::new(CaseError::Red(e))
@@ -207,6 +219,17 @@ impl<'e, 'b, 'g> ::std::convert::From<Box<RedError>> for Box<CaseError<'e, 'b, '
 impl<'e, 'b, 'g> ::std::convert::From<UnivError> for Box<CaseError<'e, 'b, 'g>> {
     fn from(e: UnivError) -> Self {
         Box::new(CaseError::Univ(e))
+    }
+}
+
+impl<'e, 'b, 'g> ::std::convert::From<Box<SpecialRedError>> for Box<CaseError<'e, 'b, 'g>> {
+    fn from(e: Box<SpecialRedError>) -> Self {
+        Box::new(match *e {
+            SpecialRedError::Anomaly(ref s) => CaseError::Anomaly(s.clone()),
+            SpecialRedError::Idx(ref e) => CaseError::Idx(e.clone()),
+            SpecialRedError::Red(ref e) => CaseError::Red(e.clone()),
+            SpecialRedError::UserError(ref s) => CaseError::UserError(s.clone()),
+        })
     }
 }
 
@@ -221,7 +244,6 @@ impl<'e, 'b, 'g> CaseError<'e, 'b, 'g> {
             ConvError::Univ(ref e) => CaseError::Univ(e.clone()),
             ConvError::Red(ref e) => CaseError::Red(e.clone()),
             ConvError::NotFound => CaseError::NotFound,
-            ConvError::UserError(ref s) => CaseError::UserError(s.clone()),
             ConvError::NotConvertible => CaseError::Type(make_type_error()),
             // NOTE: Should not actually happen, but seems harmless enough.
             ConvError::NotConvertibleVect(_) => CaseError::Type(make_type_error()),
@@ -239,7 +261,7 @@ impl Constr {
     ///
     /// self should be typechecked beforehand!
     pub fn find_rectype(&mut self, env: &mut Env) ->
-        ConvResult<Option<(&PUniverses<Ind>, Vec<&Constr>)>>
+        RedResult<Option<(&PUniverses<Ind>, Vec<&Constr>)>>
     {
         // TODO: If everything applied to reverse-order arg lists, we could use a more efficient
         // method here and use an iterator instead of allocating a Vec.
@@ -476,11 +498,11 @@ impl<'b, 'g> Env<'b, 'g> {
     /// Bind expected levels of parameters to actual levels
     /// Propagate the new levels in the signature
     ///
-    /// NOTE: Panics if theere are more uniform parameters than RDecls.
+    /// NOTE: Panics if there are more uniform parameters exp than RDecls ctx.
     ///
     /// NOTE: All args must be typechecked beforehand!
     fn make_subst<'a,I>(&mut self, ctx: I, mut exp: &List<Opt<Level>>,
-                        mut args: &[Constr]) -> ConvResult<LMap<Univ>>
+                        mut args: &[Constr]) -> SpecialRedResult<LMap<Univ>>
         where
             I: Iterator<Item=&'a RDecl>, {
         let mut subst = LMap::new();
@@ -527,16 +549,16 @@ impl<'b, 'g> Env<'b, 'g> {
         }
     }
 
-    /// NOTE: Panics if theere are more uniform parameters than RDecls.
+    /// NOTE: Panics if there are more uniform parameters ar.param_levels than RDecls ctx.
     ///
     /// NOTE: All argsorts must be typechecked beforehand!
     pub fn instantiate_universes<'a, I>(&mut self, ctx: I, ar: &PolArity,
-                                        argsorts: &[Constr]) -> ConvResult<Sort>
+                                        argsorts: &[Constr]) -> SpecialRedResult<Sort>
         where
             I: Iterator<Item=&'a RDecl>,
     {
         let subst = self.make_subst(ctx, &ar.param_levels, argsorts)?;
-        let level = ar.level.subst_universe(&self.globals.univ_hcons_tbl, |l| subst.get(l))?;
+        let level = ar.level.subst_univs(&self.globals.univ_hcons_tbl, |l| subst.get(l))?;
         // FIXME: We should be able to spend slightly less redundant work here checking
         // equivalence to Set and Prop.  But LLVM may be able to optimize it away.
         Ok(// Singleton type not containing types are interpretable in Prop
@@ -550,7 +572,7 @@ impl<'b, 'g> Env<'b, 'g> {
     /// Type of an inductive type
     ///
     /// NOTE: Panics if the mip arity_ctxt has length less than the number of uniform parameters
-    ///       for mip.
+    ///       ar.param_levels (if mip.0.1.arity = TemplateArity(ar)).
     ///
     /// NOTE: All paramtyps must be typechecked beforehand!
     fn type_of_inductive_gen(&mut self, mip: &PUniverses<MindSpecif<'g>>,
@@ -579,7 +601,7 @@ impl<'b, 'g> Env<'b, 'g> {
     }
 
     /// NOTE: Panics if the mip arity_ctxt has length less than the number of uniform parameters
-    ///       for mip.
+    ///       ar.param_levels (if mip.0.1.arity = TemplateArity(ar)).
     ///
     /// NOTE: All args must be typechecked beforehand!
     pub fn type_of_inductive_knowing_parameters(&mut self, mip: &PUniverses<MindSpecif<'g>>,
@@ -591,7 +613,7 @@ impl<'b, 'g> Env<'b, 'g> {
     /// Type of a (non applied) inductive type
     ///
     /// NOTE: Panics if the mip arity_ctxt has length less than the number of uniform parameters
-    ///       for mip.
+    ///       ar.param_levels (if mip.0.1.arity = TemplateArity(ar)).
     pub fn type_of_inductive(&mut self,
                              mip: &PUniverses<MindSpecif<'g>>) ->
                              IndEvaluationResult<Cow<'g, Constr>> {

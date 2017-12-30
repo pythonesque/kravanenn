@@ -699,7 +699,7 @@ impl Constr {
             // performing any cloning etc. until we actually change something.
             fn aux(t: &Constr, env: &(&Instance, &Huniv, &Cell<bool>)) -> SubstResult<Constr> {
                 let (subst, tbl, ref changed) = *env;
-                let f = |u| subst.subst_instance(u);
+                let f = |u: &Instance| u.subst_instance(subst);
                 match *t {
                     Constr::Const(ref o) => {
                         let PUniverses(ref c, ref u) = **o;
@@ -749,7 +749,7 @@ impl Constr {
                     Constr::Sort(ref o) => {
                         if let Sort::Type(ref u) = **o {
                             return Ok({
-                                let u_ = subst.subst_universe(u, tbl)?;
+                                let u_ = u.subst_instance(subst, tbl)?;
                                 if u_.hequal(u) { t.clone() }
                                 else {
                                     changed.set(true);
