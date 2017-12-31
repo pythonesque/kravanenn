@@ -462,10 +462,10 @@ pub struct ProjEta(#[serde(deserialize_state)] Constr, #[serde(deserialize_state
 #[derive(Debug, Clone, DeserializeState)]
 #[serde(deserialize_state = "Seed<'de>")]
 pub struct ProjBody {
-    #[serde(deserialize_state)] ind: Cst,
+    #[serde(deserialize_state)] pub ind: Cst,
     pub npars: Int,
     pub arg: Int,
-    #[serde(deserialize_state)] ty: Constr,
+    #[serde(deserialize_state)] pub ty: Constr,
     #[serde(deserialize_state)] eta: ProjEta,
     #[serde(deserialize_state)] body: Constr,
 }

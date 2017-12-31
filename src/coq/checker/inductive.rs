@@ -192,6 +192,16 @@ impl<'e, 'b, 'g> ::std::convert::From<ParamError> for Box<CaseError<'e, 'b, 'g>>
     }
 }
 
+impl<'e, 'b, 'g> ::std::convert::From<ConsError> for Box<CaseError<'e, 'b, 'g>> {
+    fn from(e: ConsError) -> Self {
+        Box::new(match e {
+            ConsError::Error(s) => CaseError::Error(s),
+            ConsError::Subst(e) => CaseError::Subst(e),
+            ConsError::Idx(e) => CaseError::Idx(e),
+        })
+    }
+}
+
 impl<'e, 'b, 'g> ::std::convert::From<IndError> for Box<CaseError<'e, 'b, 'g>> {
     fn from(e: IndError) -> Self {
         Box::new(match e {
@@ -222,6 +232,18 @@ impl<'e, 'b, 'g> ::std::convert::From<UnivError> for Box<CaseError<'e, 'b, 'g>> 
     }
 }
 
+impl<'e, 'b, 'g> ::std::convert::From<EnvError> for Box<CaseError<'e, 'b, 'g>> {
+    fn from(e: EnvError) -> Self {
+        Box::new(CaseError::Env(e))
+    }
+}
+
+impl<'e, 'b, 'g> ::std::convert::From<SubstError> for Box<CaseError<'e, 'b, 'g>> {
+    fn from(e: SubstError) -> Self {
+        Box::new(CaseError::Subst(e))
+    }
+}
+
 impl<'e, 'b, 'g> ::std::convert::From<Box<SpecialRedError>> for Box<CaseError<'e, 'b, 'g>> {
     fn from(e: Box<SpecialRedError>) -> Self {
         Box::new(match *e {
@@ -238,8 +260,7 @@ impl<'e, 'b, 'g> CaseError<'e, 'b, 'g> {
     /// errors.
     ///
     /// Returns the CaseError equivalent for every ConvError variant except for NotConvertible,
-    /// for which it calls `make_type_error` to get a new type error (it also does this on
-    /// NotConvertibleVect at the moment, but this is likely temporary).
+    /// for which it calls `make_type_error` to get a new type error.
     pub fn from_conv<F>(e: Box<ConvError>, make_type_error: F) -> Box<Self>
         where F: FnOnce() -> Box<TypeError<'e, 'b, 'g>>,
     {
@@ -252,7 +273,6 @@ impl<'e, 'b, 'g> CaseError<'e, 'b, 'g> {
             ConvError::NotFound => CaseError::NotFound,
             ConvError::NotConvertible => CaseError::Type(make_type_error()),
             // NOTE: Should not actually happen, but seems harmless enough.
-            ConvError::NotConvertibleVect(_) => CaseError::Type(make_type_error()),
         })
     }
 }
@@ -307,8 +327,8 @@ impl Constr {
 
     /// NOTE: sign should be iterated in reverse order from what it would be in the OCaml
     /// implementation.
-    fn instantiate_params<'a, I>(&self, full: bool, u: &Instance,
-                                 mut largs: &[Constr], sign: I, tbl: &Huniv) -> ParamResult<Constr>
+    fn instantiate_params<'a, I>(&self, full: bool, u: &Instance, mut largs: &[&Constr],
+                                 sign: I, tbl: &Huniv) -> ParamResult<Constr>
         where
             I: Iterator<Item=&'a RDecl>, {
         let mut ty = self;
@@ -320,7 +340,7 @@ impl Constr {
         // can just iterate the usual way.
         for decl in sign {
             match (decl, largs, ty) {
-                (&RDecl::LocalAssum(_, _), &[ref a, ref args..], &Constr::Prod(ref o)) => {
+                (&RDecl::LocalAssum(_, _), &[a, ref args..], &Constr::Prod(ref o)) => {
                     let (_, _, ref t) = **o;
                     largs = args;
                     subs.push(Cow::Borrowed(a));
@@ -344,12 +364,14 @@ impl Constr {
 
     /// [p] is the predicate, [c] is the match object, [realargs] is the
     /// list of real args of the inductive type.
-    fn build_case_type(&self, dep: bool, p: &Constr, realargs: &[Constr]) -> IdxResult<Constr> {
+    ///
+    /// NOTE: Returned Constr may include references to p, self, and elements of realargs.
+    fn build_case_type(&self, dep: bool, p: &Constr, realargs: &[&Constr]) -> IdxResult<Constr> {
         if dep {
             // Expensive; allocates a Vec.  The allocation could probably be removed at the cost of
             // interleaving this code more with type_case_branches and having that take a Vec.
             let mut args = realargs.to_vec();
-            args.push(self.clone());
+            args.push(self);
             p.beta_appvect(&args)
         } else {
             p.beta_appvect(realargs)
@@ -406,6 +428,10 @@ impl IndPack {
     }
 
     /// Instantiate inductives in constructor type
+    ///
+    /// NOTE: Returned Constr is c, but with rels from 0 to self.ntypes - 1 replaced with
+    /// references to the inductive type with name kn and position the same as
+    /// ntypes - rel - 1.
     fn constructor_instantiate(&self, kn: &MutInd, u: &Instance,
                                c: &Constr, tbl: &Huniv) -> SubstResult<Constr> {
         let s = self.ind_subst(kn, u);
@@ -416,7 +442,7 @@ impl IndPack {
     /// by OCaml.
     ///
     /// NOTE: Returned Constr may include Constrs from sign, self.params_ctxt, and params.
-    fn full_inductive_instantiate(&self, u: &Instance, params: &[Constr], sign: &Rctxt,
+    fn full_inductive_instantiate(&self, u: &Instance, params: &[&Constr], sign: &Rctxt,
                                   tbl: &Huniv) -> ParamResult<Vec<RDecl>> {
         const DUMMY : Sort = Sort::Prop(SortContents::Null);
         let t = Constr::mk_arity(sign.subst_instance(u, tbl), DUMMY, Cow::into_owned)?;
@@ -431,9 +457,13 @@ impl IndPack {
 
 impl Ind {
     /// Instantiate inductives and parameters in constructor type.
+    ///
+    /// NOTE: Returned Constr may include references to t, elements of params and
+    ///       mib.params_ctxt, and references to inductive types with name self.name and
+    ///       positions from 0 to mib.ntypes - 1.
     fn full_constructor_instantiate(&self, u: &Instance,
                                     (mib, _): MindSpecif,
-                                    params: &[Constr],
+                                    params: &[&Constr],
                                     t: &Constr,
                                     tbl: &Huniv) -> ParamResult<Constr> {
         let mind = &self.name;
@@ -578,12 +608,11 @@ impl<'b, 'g> Env<'b, 'g> {
     /// Type of an inductive type
     ///
     /// NOTE: Panics if the mip arity_ctxt has length less than the number of uniform parameters
-    ///       ar.param_levels (if mip.0.1.arity = TemplateArity(ar)).
+    ///       ar.param_levels (if mip.arity = TemplateArity(ar)).
     ///
     /// NOTE: All paramtyps must be typechecked beforehand!
-    fn type_of_inductive_gen(&mut self, mip: &PUniverses<MindSpecif<'g>>,
+    fn type_of_inductive_gen(&mut self, ((mib, mip), u): (MindSpecif<'g>, &Instance),
                              paramtyps: &[Constr]) -> IndEvaluationResult<Cow<'g, Constr>> {
-        let PUniverses((mib, mip), ref u) = *mip;
         match mip.arity {
             IndArity::RegularArity(ref a) => {
                 if mib.polymorphic {
@@ -610,7 +639,7 @@ impl<'b, 'g> Env<'b, 'g> {
     ///       ar.param_levels (if mip.0.1.arity = TemplateArity(ar)).
     ///
     /// NOTE: All args must be typechecked beforehand!
-    pub fn type_of_inductive_knowing_parameters(&mut self, mip: &PUniverses<MindSpecif<'g>>,
+    pub fn type_of_inductive_knowing_parameters(&mut self, mip: (MindSpecif<'g>, &Instance),
                                                 args: &[Constr]) ->
                                                 IndEvaluationResult<Cow<'g, Constr>> {
         self.type_of_inductive_gen(mip, args)
@@ -620,8 +649,7 @@ impl<'b, 'g> Env<'b, 'g> {
     ///
     /// NOTE: Panics if the mip arity_ctxt has length less than the number of uniform parameters
     ///       ar.param_levels (if mip.0.1.arity = TemplateArity(ar)).
-    pub fn type_of_inductive(&mut self,
-                             mip: &PUniverses<MindSpecif<'g>>) ->
+    pub fn type_of_inductive(&mut self, mip: (MindSpecif<'g>, &Instance)) ->
                              IndEvaluationResult<Cow<'g, Constr>> {
         self.type_of_inductive_knowing_parameters(mip, &[])
     }
@@ -714,7 +742,7 @@ impl PUniverses<Ind> {
     /// by OCaml.
     ///
     /// NOTE: Returned Constr may include Constrs from mip.arity_ctxt, mib.params_ctxt, and params.
-    fn get_instantiated_arity(&self, (mib, mip): MindSpecif, params: &[Constr],
+    fn get_instantiated_arity(&self, (mib, mip): MindSpecif, params: &[&Constr],
                               tbl: &Huniv) -> ParamResult<(Vec<RDecl>, SortFam)> {
         let PUniverses(_, ref u) = *self;
         let (sign, s) = mip.arity();
@@ -724,7 +752,7 @@ impl PUniverses<Ind> {
 
     /// NOTE: Panics if mip.arity_ctxt does not have at least mip.nrealdecls entries.
     fn build_dependent_inductive(self, (_, mip): MindSpecif,
-                                 params: &[Constr]) -> IdxResult<Constr> {
+                                 params: &[&Constr]) -> IdxResult<Constr> {
         // TODO: Check to see if nrealdecls being a legal usize is guaranteed elsewhere.
         let nrealdecls = usize::try_from(mip.nrealdecls).map_err(IdxError::from)?;
         let realargs = mip.arity_ctxt.iter().take(nrealdecls);
@@ -755,7 +783,9 @@ impl PUniverses<Ind> {
             // TODO: Check to see whether we can avoid cloning the slice (seems
             //       unlikely since we need an Arc<Vec<_>>).
             let ind = Constr::Ind(ORef(Arc::from(self)));
-            Constr::App(ORef(Arc::from((ind, Array(Arc::from(params.to_vec()))))))
+            Constr::App(ORef(Arc::from((ind, Array(Arc::new(params.into_iter()
+                                                                  .map( |&x| x.clone())
+                                                                  .collect()))))))
         })
     }
 
@@ -772,7 +802,7 @@ impl PUniverses<Ind> {
     /// true mean "does not have matching arity" and false mean "does have matching arity"?
     fn is_correct_arity<'e, 'b, 'g>(&self, env: &'e mut Env<'b, 'g>, c: &Constr,
                                     p: &Constr, pj: &Constr, specif: MindSpecif<'g>,
-                                    params: &[Constr]
+                                    params: &[&Constr]
                                    ) -> CaseResult<'e, 'b, 'g, (&'e mut Env<'b, 'g>, bool)> {
         let (arsign, _) = self.get_instantiated_arity(specif, params,
                                                       &env.globals.univ_hcons_tbl)?;
@@ -873,6 +903,12 @@ impl PUniverses<Ind> {
     /// [p] is the predicate, [i] is the constructor number (starting from 0),
     /// and [cty] is the type of the constructor (params not instantiated)
     ///
+    /// NOTE: Returns a Vec of Constrs that may contain references to p,
+    ///       elements of specif.1.nf_lc, params, and specif.0.params_ctxt, references to
+    ///       inductive types with name self.0.name and positions from 0 to specif.0.ntypes - 1,
+    ///       and (if dep is true) references to constructors with inductive type self.0 and
+    ///       idx within specif.1.nf_lc.len().
+    ///
     /// NOTE: nparams must be the same as specif.0.nparams, cast to usize.
     ///
     /// NOTE: Panics if ccl.decompose_app() has fewer than nparams arguments for any of the Constrs
@@ -885,7 +921,7 @@ impl PUniverses<Ind> {
     /// should always be (modulo foralls, letins, and casts) the inductive type applied to at least
     /// nparams arguments.  TODO: confirm that this is what it means, and that this is actually
     /// checked somewhere else (otherwise, we should return an error here).
-    fn build_branches_type(&self, specif: MindSpecif, params: &[Constr],
+    fn build_branches_type(&self, specif: MindSpecif, params: &[&Constr],
                            dep: bool, p: &Constr, tbl: &Huniv,
                            nparams: usize) -> ParamResult<Vec<Constr>> {
         let PUniverses(ref ind, ref u) = *self;
@@ -950,6 +986,14 @@ impl PUniverses<Ind> {
     /// It does this by first looking up the inductive type in the context (specif), then
     /// typing the branches, and then typing the full match expression.
     ///
+    /// NOTE: Returns a Vec of Constrs that may contain references to p,
+    ///       elements of specif.1.nf_lc, largs, and specif.0.params_ctxt, references to
+    ///       inductive types with name self.0.name and positions from 0 to specif.0.ntypes - 1,
+    ///       and references to constructors with inductive type self.0 and
+    ///       idx within specif.1.nf_lc.len().
+    ///
+    /// NOTE: Returned Constr may include references to p, c, and elements of largs.
+    ///
     /// NOTE: Panics if there are fewer largs than specif.0.nparams.
     ///
     /// NOTE: Panics if specif.1.arity_ctxt does not have at least specif.1.nrealdecls entries.
@@ -964,7 +1008,7 @@ impl PUniverses<Ind> {
     /// NOTE: The environment is not necessarily left unaltered on error.  This is something
     /// that can be fixed, if need be, but for now we only make sure to truncate the environment
     /// down to its original rdecls if we succeed or fail with a type error.
-    pub fn type_case_branches<'e, 'b, 'g>(&self, env: &'e mut Env<'b, 'g>, largs: &[Constr],
+    pub fn type_case_branches<'e, 'b, 'g>(&self, env: &'e mut Env<'b, 'g>, largs: &[&Constr],
                                           p: &Constr, pj: &Constr, c: &Constr) ->
             CaseResult<'e, 'b, 'g, (&'e mut Env<'b, 'g>, Vec<Constr>, Constr)> {
         let specif = if let Some(specif) = env.globals.lookup_mind_specif(&self.0)? { specif }

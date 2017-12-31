@@ -188,7 +188,7 @@ impl<'g> Globals<'g> where {
             })
     }
 
-    pub fn lookup_projection(&self, p: &Cst) -> Option<EnvResult<&ProjBody>> {
+    pub fn lookup_projection(&self, p: &Cst) -> Option<EnvResult<&'g ProjBody>> {
         // NOTE: Altered from OCaml implementation to not require p to be a Proj, since sometimes
         // we only have a constant (for instance, when checking a projection invented for eta
         // expansion of primitive records).

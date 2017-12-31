@@ -94,7 +94,6 @@ pub enum ConvError {
     Univ(UnivError),
     Red(Box<RedError>),
     NotConvertible,
-    NotConvertibleVect(usize),
     NotFound,
 }
 
@@ -152,6 +151,12 @@ impl<'id, 'a, 'b> ::std::ops::Deref for LftConstrStack<'id, 'a, 'b> {
 impl<'id, 'a, 'b> ::std::ops::DerefMut for LftConstrStack<'id, 'a, 'b> {
     fn deref_mut(&mut self) -> &mut Vec<ZL<'id, 'a, 'b>> {
         &mut self.0
+    }
+}
+
+impl ::std::convert::From<!> for Box<ConvError> {
+    fn from(e: !) -> Self {
+        e
     }
 }
 

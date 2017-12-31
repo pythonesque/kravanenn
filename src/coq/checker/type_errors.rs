@@ -69,14 +69,14 @@ pub enum TypeErrorKind {
               Option<(SortFam, SortFam, ArityError)>),
     CaseNotInductive(UnsafeJudgment),
     WrongCaseInfo(Ind, CaseInfo),
-    NumberBranches(UnsafeJudgment, Int),
-    IllFormedBranch(Constr, Int, Constr, Constr),
+    NumberBranches(UnsafeJudgment, usize),
+    IllFormedBranch(Constr, usize, Constr, Constr),
     Generalization((Name, Constr), UnsafeJudgment),
     ActualType(UnsafeJudgment, Constr),
     CantApplyBadType((usize, Constr, Constr), UnsafeJudgment, Vec<UnsafeJudgment>),
     CantApplyNonFunctional(UnsafeJudgment, Vec<UnsafeJudgment>),
     IllFormedRecBody(GuardError, Vec<Name>, Int),
-    IllTypedRecBody(Int, Vec<Name>, Vec<UnsafeJudgment>, Vec<Constr>),
+    IllTypedRecBody(usize, Vec<Name>, Vec<UnsafeJudgment>, Vec<Constr>),
     UnsatisfiedConstraints(HashSet<UnivConstraint>),
 }
 
@@ -111,6 +111,23 @@ pub fn error_elim_arity<'e, 'b, 'g>(env: &'e mut Env<'b, 'g>,
     Box::new(TypeError(env, TypeErrorKind::ElimArity(ind, aritylst, c, pj, okinds)))
 }
 
+pub fn error_case_not_inductive<'e, 'b, 'g>(env: &'e mut Env<'b, 'g>,
+                                            j: UnsafeJudgment) -> Box<TypeError<'e, 'b, 'g>> {
+    Box::new(TypeError(env, TypeErrorKind::CaseNotInductive(j)))
+}
+
+pub fn error_number_branches<'e, 'b, 'g>(env: &'e mut Env<'b, 'g>,
+                                         cj: UnsafeJudgment,
+                                         expn: usize) -> Box<TypeError<'e, 'b, 'g>> {
+    Box::new(TypeError(env, TypeErrorKind::NumberBranches(cj, expn)))
+}
+
+pub fn error_ill_formed_branch<'e, 'b, 'g>(env: &'e mut Env<'b, 'g>, c: Constr, i: usize,
+                                           actty: Constr,
+                                           expty: Constr) -> Box<TypeError<'e, 'b, 'g>> {
+    Box::new(TypeError(env, TypeErrorKind::IllFormedBranch(c, i, actty, expty)))
+}
+
 pub fn error_actual_type<'e, 'b, 'g>(env: &'e mut Env<'b, 'g>, j: UnsafeJudgment,
                                      expty: Constr) -> Box<TypeError<'e, 'b, 'g>> {
     Box::new(TypeError(env, TypeErrorKind::ActualType(j, expty)))
@@ -127,6 +144,12 @@ pub fn error_cant_apply_bad_type<'e, 'b, 'g>(env: &'e mut Env<'b, 'g>, t: (usize
                                              rator: UnsafeJudgment, randl: Vec<UnsafeJudgment>,
                                             ) -> Box<TypeError<'e, 'b, 'g>> {
     Box::new(TypeError(env, TypeErrorKind::CantApplyBadType(t, rator, randl)))
+}
+
+pub fn error_ill_typed_rec_body<'e, 'b, 'g>(env: &'e mut Env<'b, 'g>, i: usize, lna: Vec<Name>,
+                                            vdefj: Vec<UnsafeJudgment>,
+                                            vargs: Vec<Constr>) -> Box<TypeError<'e, 'b, 'g>> {
+    Box::new(TypeError(env, TypeErrorKind::IllTypedRecBody(i, lna, vdefj, vargs)))
 }
 
 pub fn error_unsatisfied_constraints<'e, 'b, 'g>(env: &'e mut Env<'b, 'g>,
