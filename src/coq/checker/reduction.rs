@@ -461,7 +461,7 @@ impl Constr {
                 // setting we just take slices into a Vec.
                 // FIXME: If we just write substl to operate on reversed stacks, we don't need to
                 // reverse here.
-                let t = t.substl(stack.into_iter().rev())?;
+                let t = t.substl(stack.into_iter().rev().map(Borrow::borrow))?;
                 return Ok(t.applist(Vec::new()))
             }
         }
@@ -470,7 +470,7 @@ impl Constr {
         // However, the environment needs to be reversed, for the same reason given above (the
         // FIXME from above still applies here, too).
         let (env, stack) = stack.split_at(i);
-        let t = t.substl(env.into_iter().rev())?;
+        let t = t.substl(env.into_iter().rev().map(Borrow::borrow))?;
         Ok(t.applist(stack.iter().map( |c| c.borrow().clone()).collect()))
     }
 }
@@ -1415,8 +1415,9 @@ impl<'b, 'g> Env<'b, 'g> {
     /// NOTE: c must be type-checked beforehand!
     pub fn dest_prod(&mut self, mut c: Constr) -> RedResult<(Vec<RDecl>, Constr)> {
         let mut m = Vec::new();
+        let orig_len = self.rel_context.len();
         loop {
-            c.whd_all(self)?;
+            if let Err(e) = c.whd_all(self) { self.rel_context.truncate(orig_len); return Err(e) }
             match c {
                 Constr::Prod(o) => {
                     let (ref n, ref a, ref c0) = *o;
@@ -1425,7 +1426,7 @@ impl<'b, 'g> Env<'b, 'g> {
                     m.push(d);
                     c = c0.clone();
                 },
-                _ => { return Ok((m, c)) }
+                _ => { self.rel_context.truncate(orig_len); return Ok((m, c)) }
             }
         }
     }
@@ -1435,8 +1436,11 @@ impl<'b, 'g> Env<'b, 'g> {
     /// Note: ty must be type-checked beforehand!
     pub fn dest_prod_assum(&mut self, mut ty: Constr) -> RedResult<(Vec<RDecl>, Constr)> {
         let mut l = Vec::new();
+        let orig_len = self.rel_context.len();
         loop {
-            ty.whd_allnolet(self)?;
+            if let Err(e) = ty.whd_allnolet(self) {
+                self.rel_context.truncate(orig_len); return Err(e)
+            }
             match ty {
                 Constr::Prod(o) => {
                     let (ref x, ref t, ref c) = *o;
@@ -1458,8 +1462,10 @@ impl<'b, 'g> Env<'b, 'g> {
                 },
                 _ => {
                     let mut ty_ = ty.clone();
-                    ty_.whd_all(self)?;
-                    if ty_.eq(&ty) { return Ok((l, ty)) }
+                    if let Err(e) = ty_.whd_all(self) {
+                        self.rel_context.truncate(orig_len); return Err(e)
+                    }
+                    if ty_.eq(&ty) { self.rel_context.truncate(orig_len); return Ok((l, ty)) }
                     else { ty = ty_; }
                 },
             }
@@ -1469,8 +1475,11 @@ impl<'b, 'g> Env<'b, 'g> {
     /// Note: ty must be type-checked beforehand!
     pub fn dest_lam_assum(&mut self, mut ty: Constr) -> RedResult<(Vec<RDecl>, Constr)> {
         let mut l = Vec::new();
+        let orig_len = self.rel_context.len();
         loop {
-            ty.whd_allnolet(self)?;
+            if let Err(e) = ty.whd_allnolet(self) {
+                self.rel_context.truncate(orig_len); return Err(e)
+            }
             match ty {
                 Constr::Lambda(o) => {
                     let (ref x, ref t, ref c) = *o;

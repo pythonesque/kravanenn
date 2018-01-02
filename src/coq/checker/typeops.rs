@@ -60,7 +60,11 @@ impl<'b, 'g> Env<'b, 'g> {
     /// NOTE: Unlike the OCaml implementation, v1 and v2 are not guaranteed to have the same length
     /// here; if you want to enforce that you must do it in the caller.
     ///
-    /// NOTE: All Constrs yielded by v1 and v2 must be typechecked beforehand!
+    /// NOTE: Precondition: ∀ pj ∈ v1, ∃ s : sort, self ⊢ pj : s
+    ///
+    /// NOTE: Precondition: ∀ pj ∈ v2, ∃ s : sort, self ⊢ pj : s
+    ///
+    /// NOTE: Postcondition: ∀ i : nat, self ⊨ v1[i] ≡ v2[i]
     fn conv_leq_vecti<I1, I2, T1, T2, E2>(&mut self, v1: I1,
                                           v2: I2) -> Result<(), (usize, Box<ConvError>)>
         where
@@ -92,7 +96,9 @@ impl<'b, 'g> Env<'b, 'g> {
     ///
     /// NOTE: Mutates ty in-place, unlike the OCaml implementation.
     ///
-    /// NOTE: ty must be typechecked beforehand!
+    /// NOTE: Precondition: ∃ ty' : constr, self ⊢ ty : ty'
+    ///
+    /// NOTE: Postcondition: ∃ s : sort, self ⊨ ty' ≡ s
     fn type_judgment<'e, 'a>(&'e mut self, c: &Constr, ty: &'a mut Constr, ty_: &Constr,
                             ) -> CaseResult<'e, 'b, 'g, (&'e mut Self, &'a Sort)> {
         ty.whd_all(self)?; // Mutates in-place.
@@ -105,7 +111,9 @@ impl<'b, 'g> Env<'b, 'g> {
     /// This should be a type intended to be assumed.  The error message is not as useful as
     /// for `type_judgement`.
     ///
-    /// NOTE: ty must be typechecked beforehand!
+    /// NOTE: Precondition: ∃ ty' : constr, self ⊢ ty : ty'
+    ///
+    /// NOTE: Postcondition: ∃ s : sort, self ⊨ ty' ≡ s
     fn assumption_of_judgment<'e, 'a>(&'e mut self, c: &Constr, ty: &Constr,
                                      ) -> CaseResult<'e, 'b, 'g, &'e mut Self> {
         let mut ty_ = ty.clone(); // We remember the original ty for error reporting purposes.
@@ -122,22 +130,31 @@ impl<'b, 'g> Env<'b, 'g> {
     /// Type of sorts
 
     /// Prop and Set
+    ///
+    /// NOTE: Postcondition: ∃ s : sort, self ⊢ Prop : s
     fn judge_of_prop(&self) -> Constr {
         Constr::Sort(ORef(Arc::from(Sort::Type(Univ::type1(&self.globals.univ_hcons_tbl)))))
     }
 
     /// Type of Type(i)
+    ///
+    /// NOTE: Postcondition: ∃ s : sort, self ⊢ Type u : s
     fn judge_of_type(&self, u: &Univ) -> IdxResult<Constr> {
         Ok(Constr::Sort(ORef(Arc::from(Sort::Type(u.super_(&self.globals.univ_hcons_tbl)?)))))
     }
 
     /// Type of a de Bruijn index.
+    ///
+    /// NOTE: Precondition: ∀ (n : nat) (typ : constr),
+    ///       self ⊢ Rel n : typ → ∃ s : sort, self ⊢ typ : s
+    ///
+    /// NOTE: Postcondition: ∃ (typ : constr) (s : sort), self ⊢ Rel n : typ ∧ self ⊢ typ : s
     fn judge_of_relative<'e>(&'e mut self,
                              n: Idx) -> CaseResult<'e, 'b, 'g, (&'e mut Self, Constr)> {
         if let Some(typ) = self.lookup_rel(n).map( |decl| match *decl {
             RDecl::LocalAssum(_, ref typ) => typ.lift(n),
             RDecl::LocalDef(_, _, ref o) => o.lift(n),
-        }) { Ok((self, typ?.lift(n)?)) }
+        }) { Ok((self, typ?)) }
         else { Err(Box::new(CaseError::Type(error_unbound_rel(self, n)))) }
     }
 
@@ -146,7 +163,11 @@ impl<'b, 'g> Env<'b, 'g> {
     /// NOTE: Panics if there are more uniform parameters ar.param_levels than RDecls sign
     ///       (if t = TemplateArity(sign, ar)).
     ///
-    /// NOTE: All paramtyps must be typechecked beforehand!
+    /// NOTE: Precondition: ∀ pj ∈ paramtyps, ∃ s : sort, self ⊢ pj : s
+    ///
+    /// NOTE: Precondition (ignoring template arity): ∃ s : sort, self ⊢ t : s
+    ///
+    /// NOTE: Postcondition (ignoring template arity): ∃ s : sort, self ⊢ t : s
     fn type_of_constant_type_knowing_parameters<'a>(&mut self, t: Cow<'a, CstType>,
                                                     paramtyps: &[Constr]
                                                    ) -> SpecialRedResult<Cow<'a, Constr>> {
@@ -178,7 +199,18 @@ impl<'b, 'g> Env<'b, 'g> {
     /// NOTE: Panics if there are more uniform parameters ar.param_levels than RDecls sign
     ///       (if ty = TemplateArity(sign, ar), where ty = self.globals.constant_type(cst)).
     ///
-    /// NOTE: All paramtyps must be typechecked beforehand!
+    /// NOTE: Precondition: ∀ pj ∈ paramtyps, ∃ s : sort, self ⊢ pj : s
+    ///
+    /// NOTE: Precondition (ignoring template arity):
+    ///
+    ///       ∀ (δ,u) : pconstant, δ ∈ self → ∃ (cb : constant_body) (s : sort),
+    ///       self ⊨ consistent [u]cb.universes.1 →
+    ///       self ⊢ Const [u]δ : [u]cb.ty ∧ self ⊢ [u]cb.ty : s
+    ///
+    /// NOTE: Postcondition (ignoring template arity):
+    ///
+    ///       ∃ (ty : constr) (s : sort) (cu : context), self ⊨ consistent cu →
+    ///                                                  self ⊢ Const [u]δ : ty ∧ self ⊢ ty : s
     fn type_of_constant_knowing_parameters(&mut self, cst: &PUniverses<Cst>,
                                            paramtyps: &[Constr]) ->
             Option<IndEvaluationResult<(Cow<'g, Constr>, HashSet<UnivConstraint>)>> {
@@ -191,6 +223,10 @@ impl<'b, 'g> Env<'b, 'g> {
 
     /// NOTE: Panics if there are more uniform parameters ar.param_levels than RDecls sign
     ///       (if t = TemplateArity(sign, ar)).
+    ///
+    /// NOTE: Precondition (ignoring template arity): ∃ s : sort, self ⊢ t : s
+    ///
+    /// NOTE: Postcondition (ignoring template arity): ∃ s : sort, self ⊢ t : s
     pub fn type_of_constant_type<'a>(&mut self,
                                      t: &'a CstType) -> SpecialRedResult<Cow<'a, Constr>> {
         self.type_of_constant_type_knowing_parameters(Cow::Borrowed(t), &[])
@@ -216,7 +252,17 @@ impl<'b, 'g> Env<'b, 'g> {
     /// NOTE: Panics if there are more uniform parameters ar.param_levels than RDecls sign
     ///       (if ty = TemplateArity(sign, ar), where ty = self.globals.constant_type(cst)).
     ///
-    /// NOTE: All paramstyp must be typechecked beforehand!
+    /// NOTE: Precondition: ∀ pj ∈ paramstyp, ∃ s : sort, self ⊢ pj : s
+    ///
+    /// NOTE: Precondition (ignoring template arity):
+    ///
+    ///       ∀ (δ,u) : pconstant, δ ∈ self → ∃ (cb : constant_body) (s : sort),
+    ///       self ⊨ consistent [u]cb.universes.1 →
+    ///       self ⊢ Const [u]δ : [u]cb.ty ∧ self ⊢ [u]cb.ty : s
+    ///
+    /// NOTE: Postcondition (ignoring template arity):
+    ///
+    ///       ∃ (ty : constr) (s : sort), self ⊢ Const [u]δ : ty ∧ self ⊢ ty : s
     fn judge_of_constant_knowing_parameters<'e>(&'e mut self, cst: &PUniverses<Cst>,
                                                 paramstyp: &[Constr]) ->
             CaseResult<'e, 'b, 'g, (&'e mut Self, Cow<'g, Constr>)> {
@@ -238,6 +284,16 @@ impl<'b, 'g> Env<'b, 'g> {
     ///
     /// NOTE: Panics if there are more uniform parameters ar.param_levels than RDecls sign
     ///       (if ty = TemplateArity(sign, ar), where ty = self.globals.constant_type(cst)).
+    ///
+    /// NOTE: Precondition (ignoring template arity):
+    ///
+    ///       ∀ (δ,u) : pconstant, δ ∈ self → ∃ (cb : constant_body) (s : sort),
+    ///       self ⊨ consistent [u]cb.universes.1 →
+    ///       self ⊢ Const [u]δ : [u]cb.ty ∧ self ⊢ [u]cb.ty : s
+    ///
+    /// NOTE: Postcondition (ignoring template arity):
+    ///
+    ///       ∃ (ty : constr) (s : sort), self ⊢ Const [u]δ : ty ∧ self ⊢ ty : s
     fn judge_of_constant<'e>(&'e mut self, cst: &PUniverses<Cst>) ->
         CaseResult<'e, 'b, 'g, (&'e mut Self, Cow<'g, Constr>)> {
         self.judge_of_constant_knowing_parameters(cst, &[])
@@ -245,7 +301,12 @@ impl<'b, 'g> Env<'b, 'g> {
 
     /// Type of an application.
     ///
-    /// NOTE: funj and both sides of each judgment in argjv must be typechecked beforehand!
+    /// NOTE: Precondition: ∀ (h, hj) ∈ argjv, ∃ s : sort, self ⊢ pj : s ∧ self ⊢ h : hj
+    ///
+    /// NOTE: Precondition: ∃ s : sort, self ⊢ funj : s
+    ///
+    /// NOTE: Postcondition: ∃ (typ : constr) (s: sort), self ⊢ App f (map fst argjv) : typ ∧
+    ///                                                  self ⊢ typ : s
     fn judge_of_apply<'e>(&'e mut self, f: &Constr, funj: &Constr, argjv: &[(&Constr, &Constr)]
                          ) -> CaseResult<'e, 'b, 'g, (&'e mut Self, Constr)> {
         let mut typ = funj.clone(); // We remember the old funj for error reporting purposes.
@@ -277,6 +338,8 @@ impl<'b, 'g> Env<'b, 'g> {
     }
 
     /// Type of product
+    ///
+    /// NOTE: Postcondition: ∃ s : sort, ∀ x : name, self ⊢ Prod (x, domsort, rangsort) : s
     fn sort_of_product<'a>(&self, domsort: &Sort, rangsort: &'a Sort) -> IdxResult<Cow<'a, Sort>> {
         Ok(match (domsort, rangsort) {
             // Product rule (s, Prop, Prop)
@@ -328,7 +391,13 @@ impl<'b, 'g> Env<'b, 'g> {
     ///       env |- c:typ2
     /// ```
     ///
-    /// NOTE: cj and tj must be typechecked beforehand!
+    /// NOTE: Precondition: self ⊢ c : cj
+    ///
+    /// NOTE: Precondition: ∃ s : sort, self ⊢ cj : s
+    ///
+    /// NOTE: Precondition: ∃ s : sort, self ⊢ tj : s
+    ///
+    /// NOTE: Postcondition: self ⊢ c : tj ∧ self ⊢ Cast c k tj : tj
     fn judge_of_cast<'e>(&'e mut self, c: &Constr, cj: &Constr, k: Cast,
                          tj: &Constr) -> CaseResult<'e, 'b, 'g, &'e mut Self> {
         let conversion = match k {
@@ -363,7 +432,17 @@ impl<'b, 'g> Env<'b, 'g> {
     ///       parameters ar.param_levels (if specif.1.arity = TemplateArity(ar)),
     ///       where specif is the result of looking up ind in self.
     ///
-    /// NOTE: All paramstyp must be typechecked beforehand!
+    /// NOTE: Precondition: ∀ p ∈ paramstyp, ∃ s : sort, self ⊢ p : s
+    ///
+    /// NOTE: Precondition (ignoring template arity):
+    ///
+    ///       ∀ (ind, u) : pinductive, ind.0 ∈ env → ∃ (mind : IndPack), ind.1 < len mind.packets →
+    ///       ∃ s : sort, env ⊢ Ind [u]ind : [u]mind.packets[ind.1].arity.user_arity ∧
+    ///                   env ⊢ [u]mind.packets[ind.1].arity.user_arity : s
+    ///
+    /// NOTE: Postcondition (ignoring template arity):
+    ///
+    ///       ∃ (ty : constr) (s : sort), self ⊢ Ind [u]ind : ty ∧ self ⊢ ty : s
     fn judge_of_inductive_knowing_parameters<'e>(&mut self,
                                                  &PUniverses(ref ind, ref u): &PUniverses<Ind>,
                                                  paramstyp: &[Constr],
@@ -378,12 +457,37 @@ impl<'b, 'g> Env<'b, 'g> {
     /// NOTE: Panics if specif.1.arity_ctxt has length less than the number of uniform
     ///       parameters ar.param_levels (if specif.1.arity = TemplateArity(ar)),
     ///       where specif is the result of looking up ind.0 in self.
+    ///
+    /// NOTE: Precondition (ignoring template arity):
+    ///
+    ///       ∀ ind : pinductive, ind.0.0 ∈ env → ∃ mind : IndPack, ind.0.1 < len mind.packets →
+    ///       ∃ s : sort, env ⊢ Ind [ind.1]ind.0 : [ind.1]mind.packets[ind.0.1].arity.user_arity ∧
+    ///                   env ⊢ [ind.1]mind.packets[ind.0.1].arity.user_arity : s
+    ///
+    /// NOTE: Postcondition (ignoring template arity):
+    ///
+    ///       ∃ (ty : constr) (s : sort), self ⊢ Ind [ind.1]ind.0 : ty ∧ self ⊢ ty : s
     fn judge_of_inductive<'e>(&mut self,
                               ind: &PUniverses<Ind>) -> CaseResult<'e, 'b, 'g, Cow<'g, Constr>> {
         self.judge_of_inductive_knowing_parameters(ind, &[])
     }
 
     /// Constructors.
+    ///
+    /// NOTE: Precondition:
+    ///
+    ///       ∀ cst : pconstructor, cst.0.0.0 ∈ env → ∃ ind: IndPack, cst.0.0.1 < len ind.packets →
+    ///       cst.0.1 < len ind.packets[cst.0.0.1].user_lc →
+    ///       self ⊢ Construct [cst.1]cst.0 : [0/[cst.1] Ind (cst.0.0.0,ind.ntypes - 1), ...,
+    ///                                        (ind.ntypes-1)/[cst.1] Ind (cst.0.0.0, 0)]
+    ///                                       [cst.1]ind.packets[cst.0.0.1].user_lc[cst.0.1] ∧
+    ///       self ⊢ [0/[cst.1] Ind (cst.0.0.0,ind.ntypes - 1), ...,
+    ///                             (ind.ntypes-1)/[cst.1] Ind (cst.0.0.0, 0)]
+    ///              [cst.1]ind.packets[cst.0.0.1].user_lc[cst.0.1] : s
+    ///
+    /// NOTE: Postcondition:
+    ///
+    ///       ∃ (ty : constr) (s : sort), self ⊢ Construct [cst.1]cst.0 : ty ∧ self ⊢ ty : s
     fn judge_of_constructor<'e>(&self,
                                 cst: &PUniverses<Cons>) -> CaseResult<'e, 'b, 'g, Constr> {
         let PUniverses(ref c, _) = *cst;
@@ -397,7 +501,11 @@ impl<'b, 'g> Env<'b, 'g> {
 
     /// Case.
 
-    /// NOTE: All Constrs yielded by lfj and explft must be typechecked beforehand!
+    /// NOTE: Precondition: ∀ cj' ∈ lfj , ∃ s : sort, self ⊢ cj' : s
+    ///
+    /// NOTE: Precondition: ∀ cj' ∈ explft, ∃ s : sort, self ⊢ cj' : s
+    ///
+    /// NOTE: Postcondition: len lfj = len epxlft ∧ ∀ i : nat, self ⊨ lfj[i] ≡ explft[i]
     fn check_branch_types<'e>(&'e mut self, c: &Constr, cj: &Constr, lfj: &[Constr],
                               explft: &[Constr]) -> CaseResult<'e, 'b, 'g, &'e mut Self> {
         if lfj.len() != explft.len() {
@@ -414,17 +522,22 @@ impl<'b, 'g> Env<'b, 'g> {
         } else { Ok(self) }
     }
 
-    /// For the below requirements, specif is the result of looking up ci.ind in the
+    /// For the below requirements, specif is the result of looking up indspec.0.0 in the
     /// environment of self, and indspec is the result of calling find_rectype on cj in the
     /// environment of self.
     ///
-    /// NOTE: The following must be typechecked beforehand: p, cj, pj; all entries in lfj,
-    ///       specif.0.params_ctxt, specif.1.arity_ctxt, and specif.1.nf_lc;
-    ///       inductive types with name ci.ind.name and positions from 0 to
-    ///       specif.0.ntypes - 1; constructors with inductive type ci.ind and idx from 0 to
-    ///       specif.1.nf_lc.len().
+    /// NOTE: Precondition: ∃ s : sort, self ⊢ cj : s
     ///
-    /// NOTE: Panics if indspec.1.len() < ci.npar.
+    /// NOTE: Precondition: ∃ s : sort, self ⊢ pj : s
+    ///
+    /// NOTE: Precondition: ∀ cj' ∈ lfj , ∃ s : sort, self ⊢ cj' : s
+    ///
+    /// NOTE: Precondition: ∀ cj' ∈ specif.1.nf_lc, ∃ s : sort, self ⊢ cj' : s
+    ///
+    /// NOTE: The following must be typechecked beforehand: all entries in specif.0.params_ctxt
+    ///       and specif.1.arity_ctxt; inductive types with name indspec.0.0.name and positions
+    ///       from 0 to specif.0.ntypes - 1; constructors with inductive type indspec.0.0 and
+    ///       idx from 1 to specif.1.nf_lc.len().
     ///
     /// NOTE: Panics if specif.1.arity_ctxt does not have at least specif.1.nrealdecls entries.
     ///
@@ -437,6 +550,12 @@ impl<'b, 'g> Env<'b, 'g> {
     /// NOTE: self is not necessarily left unaltered on error.  This is something
     /// that can be fixed, if need be, but for now we only make sure to truncate the environment
     /// down to its original rdecls if we succeed or fail with a type error.
+    ///
+    /// NOTE: Postcondition:
+    ///
+    ///       ∃ ty : constr, ∀ lf : list constr, len lf = len lfj → self ⊢ c : cj →
+    ///       self ⊢ p : pj → (∀ i : nat, 0 ≤ i < len lfj → self ⊢ lf[i] : lfj[i]) →
+    ///       self ⊢ match c return p with lf end : ty
     fn judge_of_case<'e>(&'e mut self, ci: &CaseInfo,
                          p: &Constr, pj: &Constr, c: &Constr, cj: &Constr,
                          lfj: &[Constr]) -> CaseResult<'e, 'b, 'g, (&'e mut Self, Constr)> {
@@ -447,13 +566,33 @@ impl<'b, 'g> Env<'b, 'g> {
         };
         // TODO: Below, we return NotFound if indspec isn't found in the environment, but it might
         // make more sense to fail with a "Cannot find inductive" error as we do in other
-        // judgments.
+        // judgments... on the other hand, it might actually make sense to panic in this case if
+        // that happens, since we know that all parts of indspec should have already been
+        // typechecked, which means it should presumably exist in the environment (there's a
+        // comment to the effect that it might be okay to panic on NotFound in closure.rs as well;
+        // perhaps it's worth investigating further).
         let env = ci.check_case_info(self, &(indspec.0).0)?;
         // We now know that ci.ind = indspec.0.0, specif exists,
         // specif.0.nparams == ci.npar, specif.1.consnrealdecls == ci.cstr_ndecls, and
         // specif.1.consnrealargs == ci.cstr_nargs.
+        // Note that since ∃ s : sort, self ⊢ cj : s, and find_rectype succeeded, indspec has to
+        // decompose into an application of an inductive type to a series of parameters and
+        // indices; partial applications of inductive types do not have sorts as types, so the
+        // application must be full.  Therefore, indspec.1.len() < indspec.0.0.npar (since a full
+        // application of an inductive type always includes all parameters).
         let (env, bty, rslty) = indspec.0.type_case_branches(env, &indspec.1, p, pj, c)?;
+        // NOTE: We now know the postcondition of type_case_branches, and can instantiate it with
+        // lfj as snd lb. We also know env ⊢ cj ≡ (Ind indspec.0) indspec.1, thanks to the
+        // postcondition of find_rectype.  We thus know:
+        // ∀ lf : list constr, len bty = len lf = len lfj → env ⊢ c : cj → env ⊢ p : pj →
+        // (∀ i : nat, 0 ≤ i < len lfj → env ⊢ lf[i] : lfj[i] ∧ env ⊨ lfj[i] ≡ bty[i]) →
+        // self ⊢ match c return p with lf end : rslty
         let env = env.check_branch_types(c, cj, lfj, &bty)?;
+        // From the postcondition of check_branch_types, len lfj = len bty ∧
+        // ∀ i : nat, self ⊨ lfj[i] ≡ bty[i].  So we know:
+        // ∀ lf : list constr, len lf = len lfj → env ⊢ c : cj → env ⊢ p : pj →
+        // (∀ i : nat, 0 ≤ i < len lfj → env ⊢ lf[i] : lfj[i]) →
+        // self ⊢ match c return p with lf end : rslty
         Ok((env, rslty))
     }
 

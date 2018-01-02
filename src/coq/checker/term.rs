@@ -68,14 +68,16 @@ impl ::std::convert::From<IdxError> for SubstError {
     }
 }
 
-impl<'a> Substituend<&'a Constr> {
+impl<T> Substituend<T>
+    where T: Borrow<Constr>,
+{
     /// 1st : general case
     pub fn lift(&self, depth: Idx) -> IdxResult<Constr> {
         match self.info.get() {
-            Info::Closed => Ok(self.it.clone()),
-            Info::Open => self.it.lift(depth),
+            Info::Closed => Ok(self.it.borrow().clone()),
+            Info::Open => self.it.borrow().lift(depth),
             Info::Unknown => {
-                self.info.set(if self.it.closed0()? { Info::Closed } else { Info::Open });
+                self.info.set(if self.it.borrow().closed0()? { Info::Closed } else { Info::Open });
                 // Recursion is okay here since it can only loop once.
                 self.lift(depth)
             },
@@ -395,8 +397,11 @@ impl Constr {
 
     /// Substituting
 
-    fn substrec(&self,
-                &(depth, ref lamv): &(Option<Idx>, &[Substituend<&Constr>])) -> IdxResult<Constr> {
+    fn substrec<T>(&self,
+                   &(depth, ref lamv): &(Option<Idx>, &[Substituend<T>])) -> IdxResult<Constr>
+        where
+            T: Borrow<Constr>,
+    {
         match *self {
             Constr::Rel(k_) => {
                 // FIXME: For below, ensure u32 to usize is always a valid cast.
@@ -411,7 +416,7 @@ impl Constr {
                     // therefore, 0 ≤ k - depth - 1, so that is valid.
                     // Also, the unwrap() below is granted because 0 < k.
                     // FIXME: There is a better way of dealing with this.
-                    sub.lift(depth.unwrap())
+                    sub.borrow().lift(depth.unwrap())
                 } else {
                     // k - lamv.len() is valid (and > 0) because if lamv.get(k - d - 1) = None,
                     // lamv.len() ≤ k - d - 1 < k - d ≤ k (i.e. lamv.len() < k), so
@@ -439,25 +444,28 @@ impl Constr {
     /// (subst1 M c) substitutes M for Rel(1) in c
     /// we generalise it to (substl [M1,...,Mn] c) which substitutes in parallel
     /// M1,...,Mn for respectively Rel(1),...,Rel(n) in c
-    pub fn substn_many(&self, lamv: &[Substituend<&Constr>], n: Option<Idx>) -> IdxResult<Constr> {
+    pub fn substn_many<T>(&self, lamv: &[Substituend<T>], n: Option<Idx>) -> IdxResult<Constr>
+        where
+            T: Borrow<Constr>,
+    {
         let lv = lamv.len();
         if lv == 0 { return Ok(self.clone()) }
         else { self.substrec(&(n, lamv)) }
     }
 
-    pub fn substnl<'a, T, C>(&self, laml: C, n: Option<Idx>) -> IdxResult<Constr>
+    pub fn substnl<T, C>(&self, laml: C, n: Option<Idx>) -> IdxResult<Constr>
         where
-            C: IntoIterator<Item=&'a T>,
-            T: Borrow<Constr> + 'a,
+            C: IntoIterator<Item=T>,
+            T: Borrow<Constr>,
     {
-        let lamv: Vec<_> = laml.into_iter().map( |i| Substituend::make(i.borrow()) ).collect();
+        let lamv: Vec<_> = laml.into_iter().map( |i| Substituend::make(i) ).collect();
         self.substn_many(&lamv, n)
     }
 
-    pub fn substl<'a, T, C>(&self, laml: C) -> IdxResult<Constr>
+    pub fn substl<T, C>(&self, laml: C) -> IdxResult<Constr>
         where
-            C: IntoIterator<Item=&'a T>,
-            T: Borrow<Constr> + 'a,
+            C: IntoIterator<Item=T>,
+            T: Borrow<Constr>,
     {
         self.substnl(laml, None)
     }

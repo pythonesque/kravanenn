@@ -66,7 +66,7 @@ use ocaml::values::{
     SortFam,
     Univ,
 };
-use std::borrow::{Cow};
+use std::borrow::{Borrow, Cow};
 use std::collections::hash_map;
 use std::sync::{Arc};
 
@@ -348,7 +348,10 @@ impl Constr {
                 },
                 (&RDecl::LocalDef(_, ref b, _), _, &Constr::LetIn(ref o)) => {
                     let (_, _, _, ref t) = **o;
-                    let s = b.subst_instance(u, tbl)?.substl(&*subs)?;
+                    // TODO: If we just write substl to operate on reversed stacks, we don't need
+                    // to reverse here.
+                    let s = b.subst_instance(u, tbl)?.substl(subs.iter().map(|t| t.borrow())
+                                                                        .rev())?;
                     subs.push(Cow::Owned(s));
                     ty = t;
                 },
@@ -358,7 +361,7 @@ impl Constr {
         }
         // TODO: If we just write substl to operate on reversed stacks, we don't need
         // to reverse here.
-        if largs.len() == 0 { Ok(ty.substl(subs.iter().rev())?) }
+        if largs.len() == 0 { Ok(ty.substl(subs.into_iter().rev())?) }
         else { fail() }
     }
 
@@ -368,6 +371,9 @@ impl Constr {
     /// NOTE: Returned Constr may include references to p, self, and elements of realargs.
     fn build_case_type(&self, dep: bool, p: &Constr, realargs: &[&Constr]) -> IdxResult<Constr> {
         if dep {
+            // NOTE: In the dependent case (the return type of the match, p, references the matched
+            // term self) we add self as rel 1 (the same is done within each match arm in this
+            // case).
             // Expensive; allocates a Vec.  The allocation could probably be removed at the cost of
             // interleaving this code more with type_case_branches and having that take a Vec.
             let mut args = realargs.to_vec();
@@ -417,25 +423,27 @@ impl IndPack {
 
     /// Build the substitution that replaces Rels by the appropriate
     /// inductives
-    pub fn ind_subst(&self, kn: &MutInd, u: &Instance) -> Vec<Constr> {
+    fn ind_subst<'a>(&self, kn: &'a MutInd, u: &'a Instance) -> impl Iterator<Item=Constr> + 'a {
         let ntypes = self.ntypes;
         // Note that ntypes - k - 1 is guaranteed to be in-bounds (both ≥ 0 and < n) since k
         // ranges from 0 to ntypes - 1.
-        (0..ntypes).map( |k| Constr::Ind(ORef(Arc::from(PUniverses(Ind { name: kn.clone(),
-                                                                         pos: ntypes - k - 1, },
-                                                                   u.clone())))) )
-                   .collect()
+        (0..ntypes).map(move |k|
+                        Constr::Ind(ORef(Arc::from(PUniverses(Ind { name: kn.clone(),
+                                                                    pos: ntypes - k - 1, },
+                                                              u.clone())))) )
     }
 
     /// Instantiate inductives in constructor type
     ///
     /// NOTE: Returned Constr is c, but with rels from 0 to self.ntypes - 1 replaced with
     /// references to the inductive type with name kn and position the same as
-    /// ntypes - rel - 1.
+    /// rel.
     fn constructor_instantiate(&self, kn: &MutInd, u: &Instance,
                                c: &Constr, tbl: &Huniv) -> SubstResult<Constr> {
         let s = self.ind_subst(kn, u);
-        Ok(c.subst_instance(u, tbl)?.substl(&s)?)
+        // TODO: One of the few places where we don't necessarily start with a reversed list for
+        // substl, but it would be easy to remedy.
+        Ok(c.subst_instance(u, tbl)?.substl(s)?)
     }
 
     /// NOTE: The Vec<RDecl> is reversed from the Rctxt that would have been returned
@@ -755,6 +763,8 @@ impl PUniverses<Ind> {
                                  params: &[&Constr]) -> IdxResult<Constr> {
         // TODO: Check to see if nrealdecls being a legal usize is guaranteed elsewhere.
         let nrealdecls = usize::try_from(mip.nrealdecls).map_err(IdxError::from)?;
+        // "Real" arguments (with let, no params).  i.e., indices (if the inductive is
+        // well-formed).
         let realargs = mip.arity_ctxt.iter().take(nrealdecls);
         Ok(if let (realargs, Some(nrealdecls_)) = extended_rel_list(realargs)? {
             // We have a nonzero lift.
@@ -764,12 +774,18 @@ impl PUniverses<Ind> {
                 // probably return an error here instead of throwing.
                 panic!("mip.arity_ctxt should have at least mip.nrealdecls entries.");
             }
+            // We lift all the uniform parameters by the index count, to make room for references
+            // to the indices and avoid accidentally capturing them.
             // TODO: Utilize size hint from nrealdecls.
             let lparams: Result<Vec<_>, _> = params.into_iter().map( |p| p.lift(nrealdecls_) )
                                                    .collect();
             let mut lparams = lparams?;
             // TODO: Seems sort of a shame to allocate two vectors... but if we have to
             // reverse the realargs list it seems hard to avoid.
+            // We extend uniform parameters with indices in the space created by lifting all the
+            // uniform parameters, then create the relevant inductive (it typechecks in a context
+            // where all the indices are in the environment, as well as the usual parameter
+            // context).
             lparams.extend(realargs.into_iter());
             let ind = Constr::Ind(ORef(Arc::from(self)));
             ind.applist(lparams)
@@ -845,8 +861,16 @@ impl PUniverses<Ind> {
         Ok(match pt {
             Constr::Prod(o) => { // whnf of t was not needed here!
                 let (ref na1, ref a1, ref a2) = *o;
+                // In addition to the expected index arguments, p takes at least one extra
+                // parameter of type a2 (assuming env ⊢ p : pj).  If all goes well, it should
+                // turn out that this is the only extra parameter, and it represents the
+                // matched value itself; hence, its type should be the inductive type, when
+                // evaluated in the context of env extended with rels for each of its indices.
+                // Happily, this context is exactly env at this point in the program, so we just
+                // need to perform a bunch of sanity checks.
                 env.push_rel(RDecl::LocalAssum(na1.clone(), a1.clone()));
                 let mut a2 = a2.clone();
+                // First, we need to verify that this is really the only extra argument...
                 a2.whd_all(env)?; // Mutates in-place
                 env.rel_context.pop(); // Always yields an element, but we don't need it anyway.
                 let ksort = if let Constr::Sort(s) = a2 { s.family_of() } else {
@@ -857,7 +881,14 @@ impl PUniverses<Ind> {
                                                                       .collect(),
                                                     c.clone(), (p.clone(), pj.clone()), None))));
                 };
+                // We now know that env, na : a1 ⊨ a2 ≡ s
+                // for some sort s, with family ksort (and also that all the rest of the expected
+                // types in pj are convertible with the types of arsign in their appropriate
+                // contexts).  This is definitely the last argument.
                 let dep_ind = self.clone().build_dependent_inductive(specif, params)?;
+                // We have now built dep_ind, the dependent inductive type of self (evaluated in
+                // a world where the indices are at the front of the environment, which is true
+                // of the original env extended with arsign).
                 let res = env.conv(a1, &dep_ind);
                 env.rel_context.truncate(rdecl_orig_len);
                 if let Err(e) = res {
@@ -867,6 +898,11 @@ impl PUniverses<Ind> {
                                          c.clone(), (p.clone(), pj.clone()), None)
                     }))
                 }
+                // We now know that env; arsign ⊨ a1 ≡ dep_ind.
+                // In other words, env; arsign ⊢ na : dep_ind and
+                // env; arsign, na : dep_ind ⊨ a2 ≡ s for the same sort s from before (whose family
+                // is ksort), which means that it's probably sane to treat it as representing the
+                // riginal matched term.
                 if let Err(LocalArity(e)) = ksort.check_allowed_sort(specif) {
                     return Err(Box::new(CaseError::Type(
                                    error_elim_arity(env, self.clone(),
@@ -874,9 +910,15 @@ impl PUniverses<Ind> {
                                                                       .collect(),
                                                     c.clone(), (p.clone(), pj.clone()), e))));
                 }
+                // We passed our final check: it needs to be legal to eliminate inductives of sort
+                // specif into inductives of sort ksort.
                 (env, true)
             },
             Constr::Sort(s_) => {
+                // In this case, we don't have any extra parameters--the number of indices
+                // precisely corresponded to the arity of pj, and we're left with a sort (as we
+                // wanted).  So all we have to do is make sure we can eliminate inductives of sort
+                // specif into inductives of sort s_.family_of() (the family of the returned sort).
                 env.rel_context.truncate(rdecl_orig_len);
                 if let Err(LocalArity(e)) = s_.family_of().check_allowed_sort(specif) {
                     return Err(Box::new(CaseError::Type(
@@ -907,7 +949,7 @@ impl PUniverses<Ind> {
     ///       elements of specif.1.nf_lc, params, and specif.0.params_ctxt, references to
     ///       inductive types with name self.0.name and positions from 0 to specif.0.ntypes - 1,
     ///       and (if dep is true) references to constructors with inductive type self.0 and
-    ///       idx within specif.1.nf_lc.len().
+    ///       idx from 1 to specif.1.nf_lc.len().
     ///
     /// NOTE: nparams must be the same as specif.0.nparams, cast to usize.
     ///
@@ -928,18 +970,21 @@ impl PUniverses<Ind> {
         let (_, mip) = specif;
         mip.nf_lc.iter().enumerate().map(|(i, cty)| {
             let typi = ind.full_constructor_instantiate(u, specif, params, cty, tbl)?;
-            // NOTE: If the explanation above is correct, args represents all parameters and
-            // constructor arguments, and ccl represents the final return type of the constructor.
+            // NOTE: If the explanation above is correct, args represents all constructor arguments,
+            // and ccl represents the final return type of the constructor (the uniform parameters
+            // are already instantiated anywhere they are used).
             let (args, ccl) = typi.decompose_prod_assum();
             // NOTE: args is reversed from the OCaml implementation.
             let nargs = args.len();
+            // nargs represents the number of constructor arguments.
             let (_, allargs) = ccl.decompose_app();
             let dep_cstr;
             let mut cargs;
             // NOTE: allargs is in the same order as the OCaml implementation.
             let (lparams, mut vargs) = allargs.split_at(nparams);
-            // NOTE: If the explanation above is correct, vargs likely represent the indices for
-            // this constructor, and lparams the parameters.
+            // NOTE: If the explanation above is correct, vargs likely represent the returned
+            // indices for this constructor, and lparams the uniform parameters of the returned
+            // inductive type.
             if dep {
                 cargs = vargs.to_vec();
                 let idx = if let Some(i) = NonZero::new(i) { Idx::new(i)?.checked_add(Idx::ONE)? }
@@ -953,7 +998,11 @@ impl PUniverses<Ind> {
                 // reverse the extended_rel_list of args it seems hard to avoid.
                 lparams.extend(extended_rel_list(args.iter().rev())?.0);
                 // NOTE: If the explanation above is correct, lparams is now extended with any
-                // non-let-in arguments... not clear what is going on here.
+                // non-let-in constructor arguments... this means that if the original matched
+                // term is used dependently in the predicate p, vargs gets an extra parameter
+                // which is the actual matched constructor, applied to all of its uniform
+                // parameters  and all of its constructor arguments (the latter are filled in
+                // with rels available within the match arm after pattern matching).
                 dep_cstr = Constr::Construct(ORef(Arc::from(PUniverses(cstr, u.clone()))))
                                .applist(lparams);
                 cargs.push(&dep_cstr);
@@ -963,6 +1012,12 @@ impl PUniverses<Ind> {
             //       undesirable in some cases (notably, some places in closure seem to work more
             //       nicely if arg lists are nonempty).  This is a general problem with
             //       beta_appvect, though (or really applist).
+            // NOTE: If there are any, we lift p by the number of constructor arguments; this
+            //       avoids accidentally capturing arguments to the constructor when the return
+            //       type is evaluated.  The only part of the predicate that should be able to
+            //       capture the constructor arguments is dep_cstr (if present, it will be at
+            //       index 1); this will evaluate correctly since it is passed as a parameter,
+            //       and hence avoids the lift.
             let base = if let Some(nargs) = NonZero::new(nargs) {
                 p.lift(Idx::new(nargs)?)?.beta_appvect(&vargs)?
             } else { p.beta_appvect(&vargs)? };
@@ -990,7 +1045,7 @@ impl PUniverses<Ind> {
     ///       elements of specif.1.nf_lc, largs, and specif.0.params_ctxt, references to
     ///       inductive types with name self.0.name and positions from 0 to specif.0.ntypes - 1,
     ///       and references to constructors with inductive type self.0 and
-    ///       idx within specif.1.nf_lc.len().
+    ///       idx from 1 to specif.1.nf_lc.len().
     ///
     /// NOTE: Returned Constr may include references to p, c, and elements of largs.
     ///
@@ -1008,6 +1063,14 @@ impl PUniverses<Ind> {
     /// NOTE: The environment is not necessarily left unaltered on error.  This is something
     /// that can be fixed, if need be, but for now we only make sure to truncate the environment
     /// down to its original rdecls if we succeed or fail with a type error.
+    ///
+    /// NOTE: Postcondition:
+    ///
+    ///       ∃ (lc : list constr) (ty : constr), ∀ lb : list (constr * constr), len lb = len lc →
+    ///       env ⊢ c : (Ind self) largs →
+    ///       env ⊢ p : pj →
+    ///       (∀ i : nat, 0 ≤ i < len lc → env ⊢ lb[i].0 : lb[i].1 ∧ env ⊨ lb[i].1 ≡ lc[i]) →
+    ///       env ⊢ match c return p with map fst lb end : ty
     pub fn type_case_branches<'e, 'b, 'g>(&self, env: &'e mut Env<'b, 'g>, largs: &[&Constr],
                                           p: &Constr, pj: &Constr, c: &Constr) ->
             CaseResult<'e, 'b, 'g, (&'e mut Env<'b, 'g>, Vec<Constr>, Constr)> {
@@ -1017,10 +1080,31 @@ impl PUniverses<Ind> {
         // TODO: Figure out whether we actually check this ahead of time; if not, we should
         // probably return an error here instead of throwing.
         let (params, realargs) = largs.split_at(nparams);
+        // is_correct_arity checks to make sure our pattern match actually makes sense; pj should
+        // be convertible with the arity_ctxt of this inductive (after instantiating the universe
+        // and params), plus optionally one extra parameter representing the matched term itself,
+        // followed by a sort s.
         let (env, dep) = self.is_correct_arity(env, c, p, pj, specif, params)?;
+        // If the optional extra parameter is part of the type of pj, dep is true;
+        // otherwise it's false.
+        // Now we build the type of each match arm; they have the universe, params, indices, and
+        // (if dep is true) extra parameter representing the matched term (as a fully instantiated
+        // constructor for that match arm) all instantiated directly in p; hence, each type in lc
+        // should be an iterated product over constructor arguments, with the final return type the
+        // same up to differences in the values of indices and (if dep is true) the extra
+        // parameter representing the matched term.  In particular, all match arms should be
+        // convertible with the sort s (recall that the universe u is already instantiated in s and
+        // is the same regardless of match arm, even for the extra parameter).
         let lc = self.build_branches_type(specif, params, dep, p, &env.globals.univ_hcons_tbl,
                                           nparams)?;
+        // With the above successful, we know we have reasonable types for all the match arms.  All
+        // that remains is to build the type of the actual case expression, which is just p applied
+        // to the indices realargs (and optionally an extra parameter representing the matched
+        // term c, if dep is true).
         let ty = c.build_case_type(dep, p, realargs)?;
+        // Now, if env ⊢ p : pj, we have almost everything we need to ensure that the match
+        // expression is well-typed.  All that remains is to show that the actual match arms have
+        // types convertible with the computed types lc, and we're done.
         Ok((env, lc, ty))
     }
 }
