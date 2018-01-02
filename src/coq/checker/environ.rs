@@ -6,6 +6,7 @@ use coq::checker::univ::{
 };
 use coq::kernel::esubst::{
     Idx,
+    IdxResult,
 };
 use coq::kernel::names::{
     CMapEnv,
@@ -16,6 +17,7 @@ use coq::kernel::names::{
     // MpMap,
     MutInd,
 };
+use core::nonzero::{NonZero};
 use ocaml::values::{
     Cb,
     Constr,
@@ -29,6 +31,7 @@ use ocaml::values::{
     Kn,
     // ModType,
     // Module,
+    Name,
     ProjBody,
     PUniverses,
     // Rctxt,
@@ -36,7 +39,7 @@ use ocaml::values::{
     UnivConstraint,
     // VoDigest,
 };
-use std::borrow::Cow;
+use std::borrow::{Borrow, Cow};
 use std::collections::{HashSet};
 use std::fmt::{self};
 
@@ -245,5 +248,24 @@ impl<'b, 'g> Env<'b, 'g> {
 
     pub fn push_rel(&mut self, d: RDecl) {
         self.rel_context.push(d);
+    }
+
+    /// NOTE: Unlike the OCaml version, this does not check that lna and typarray have the same
+    /// length; if this needs to be enforced, it should be checked by the caller.
+    pub fn push_rec_types<I1, I2, T2, F2>(&mut self, lna: I1, typarray: I2,
+                                          mut to_owned: F2) -> IdxResult<()>
+        where
+            I1: Iterator<Item=Name>,
+            I2: Iterator<Item=T2>,
+            T2: Borrow<Constr>,
+            F2: FnMut(T2) -> Constr,
+    {
+        for (i, (na, t)) in lna.zip(typarray).enumerate() {
+            // TODO: Should only need to check in-bounds-ness of idxs once.
+            self.push_rel(RDecl::LocalAssum(na, if let Some(i) = NonZero::new(i) {
+                t.borrow().lift(Idx::new(i)?)?
+            } else { to_owned(t) }))
+        }
+        Ok(())
     }
 }

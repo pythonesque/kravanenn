@@ -68,6 +68,7 @@ use ocaml::values::{
 };
 use std::borrow::{Borrow, Cow};
 use std::collections::hash_map;
+use std::iter::{self};
 use std::sync::{Arc};
 
 /// Extracting an inductive type from a construction
@@ -545,10 +546,12 @@ impl<'b, 'g> Env<'b, 'g> {
     /// NOTE: Panics if there are more uniform parameters exp than RDecls ctx.
     ///
     /// NOTE: All args must be typechecked beforehand!
-    fn make_subst<'a,I>(&mut self, ctx: I, mut exp: &List<Opt<Level>>,
-                        mut args: &[Constr]) -> SpecialRedResult<LMap<Univ>>
+    fn make_subst<'a1, 'a2, I1, I2>(&mut self, ctx: I1, mut exp: &List<Opt<Level>>,
+                                    mut args: I2) -> SpecialRedResult<LMap<Univ>>
         where
-            I: Iterator<Item=&'a RDecl>, {
+            I1: Iterator<Item=&'a1 RDecl>,
+            I2: Iterator<Item=&'a2 Constr>,
+    {
         let mut subst = LMap::new();
         for d in ctx {
             if let RDecl::LocalDef(_, _, _) = *d { continue }
@@ -557,8 +560,7 @@ impl<'b, 'g> Env<'b, 'g> {
             if let List::Cons(ref o) = *exp {
                 let (ref u, ref exp_) = **o;
                 exp = exp_;
-                if let &[ref a, ref args_..] = args {
-                    args = args_;
+                if let Some(a) = args.next() {
                     if let Some(ref u) = *u {
                         // We recover the level of the argument, but we don't change the
                         // level in the corresponding type in the arity; this level in the
@@ -596,10 +598,11 @@ impl<'b, 'g> Env<'b, 'g> {
     /// NOTE: Panics if there are more uniform parameters ar.param_levels than RDecls ctx.
     ///
     /// NOTE: All argsorts must be typechecked beforehand!
-    pub fn instantiate_universes<'a, I>(&mut self, ctx: I, ar: &PolArity,
-                                        argsorts: &[Constr]) -> SpecialRedResult<Sort>
+    pub fn instantiate_universes<'a1, 'a2, I1, I2>(&mut self, ctx: I1, ar: &PolArity,
+                                                   argsorts: I2) -> SpecialRedResult<Sort>
         where
-            I: Iterator<Item=&'a RDecl>,
+            I1: Iterator<Item=&'a1 RDecl>,
+            I2: Iterator<Item=&'a2 Constr>,
     {
         let subst = self.make_subst(ctx, &ar.param_levels, argsorts)?;
         let level = ar.level.subst_univs(&self.globals.univ_hcons_tbl, |l| subst.get(l))?;
@@ -619,8 +622,11 @@ impl<'b, 'g> Env<'b, 'g> {
     ///       ar.param_levels (if mip.arity = TemplateArity(ar)).
     ///
     /// NOTE: All paramtyps must be typechecked beforehand!
-    fn type_of_inductive_gen(&mut self, ((mib, mip), u): (MindSpecif<'g>, &Instance),
-                             paramtyps: &[Constr]) -> IndEvaluationResult<Cow<'g, Constr>> {
+    fn type_of_inductive_gen<'a, I>(&mut self, ((mib, mip), u): (MindSpecif<'g>, &Instance),
+                                    paramtyps: I) -> IndEvaluationResult<Cow<'g, Constr>>
+        where
+             I: Iterator<Item=&'a Constr>,
+    {
         match mip.arity {
             IndArity::RegularArity(ref a) => {
                 if mib.polymorphic {
@@ -647,9 +653,12 @@ impl<'b, 'g> Env<'b, 'g> {
     ///       ar.param_levels (if mip.0.1.arity = TemplateArity(ar)).
     ///
     /// NOTE: All args must be typechecked beforehand!
-    pub fn type_of_inductive_knowing_parameters(&mut self, mip: (MindSpecif<'g>, &Instance),
-                                                args: &[Constr]) ->
-                                                IndEvaluationResult<Cow<'g, Constr>> {
+    pub fn type_of_inductive_knowing_parameters<'a, I>(&mut self, mip: (MindSpecif<'g>, &Instance),
+                                                       args: I) ->
+                                                       IndEvaluationResult<Cow<'g, Constr>>
+        where
+            I: Iterator<Item=&'a Constr>,
+    {
         self.type_of_inductive_gen(mip, args)
     }
 
@@ -659,7 +668,7 @@ impl<'b, 'g> Env<'b, 'g> {
     ///       ar.param_levels (if mip.0.1.arity = TemplateArity(ar)).
     pub fn type_of_inductive(&mut self, mip: (MindSpecif<'g>, &Instance)) ->
                              IndEvaluationResult<Cow<'g, Constr>> {
-        self.type_of_inductive_knowing_parameters(mip, &[])
+        self.type_of_inductive_knowing_parameters(mip, iter::empty())
     }
 }
 
