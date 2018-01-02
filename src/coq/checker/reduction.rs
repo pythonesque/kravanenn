@@ -1374,7 +1374,7 @@ impl<'b, 'g> Env<'b, 'g> {
     /// error message.
     ///
     /// NOTE: t must be typechecked beforehand!
-    fn hnf_prod_app(&mut self, mut t: Constr, n: &Constr) -> SpecialRedResult<Constr> {
+    fn hnf_prod_app(&self, mut t: Constr, n: &Constr) -> SpecialRedResult<Constr> {
         t.whd_all(self)?;
         match t {
             Constr::Prod(o) => {
@@ -1388,7 +1388,7 @@ impl<'b, 'g> Env<'b, 'g> {
     /// Pseudo-reduction rule  Prod(x,A,B) a --> B[x\a]
     ///
     /// NOTE: t must be typechecked beforehand!
-    pub fn hnf_prod_applist(&mut self, mut t: Constr, nl: &[Constr]) -> SpecialRedResult<Constr> {
+    pub fn hnf_prod_applist(&self, mut t: Constr, nl: &[Constr]) -> SpecialRedResult<Constr> {
         for n in nl.iter().rev() {
             t = self.hnf_prod_app(t, n)?;
         }
