@@ -177,7 +177,7 @@ pub struct Infos<'id, 'b, T> {
   // i_repr : 'a infos -> constr -> 'a;
   // globals: &'a mut Globals<'g>,
   // i_rels : int * (int * constr) list;
-  rels: (u32, VecMap<&'b mut Constr>),
+  rels: (u32, VecMap<&'b Constr>),
   tab: KeyTable<'b, T>,
   /// The owning set: if you want to do pretty much anything with an FConstr<'id, 'a, 'b>, you
   /// need this in order to do it.
@@ -392,7 +392,7 @@ impl<'id, 'a, 'b> IRepr<'id, 'a, 'b> for FConstr<'id, 'a, 'b> {
 
 impl<'id, 'a, 'b, T> Infos<'id, 'b, T> where T: IRepr<'id, 'a, 'b> {
     fn ref_value_cache<'r, 'g>(set: &Set<'id>,
-                               rels: &'r mut (u32, VecMap<&'b mut Constr>),
+                               rels: &'r mut (u32, VecMap<&'b Constr>),
                                tab: &'r mut KeyTable<'b, T>,
                                globals: &'r Globals<'g>, rf: TableKeyC<'b>,
                                ctx: Context<'id, 'a, 'b>) -> IdxResult<Option<&'r T>>
@@ -423,8 +423,8 @@ impl<'id, 'a, 'b, T> Infos<'id, 'b, T> where T: IRepr<'id, 'a, 'b> {
                                 // since ref_value_cache is the only thing that does so and it will
                                 // always take the entry in the outer hash table if it's present;
                                 // therefore, the removal here is fine.
-                                let mut body: &'b mut Constr = o.remove();
-                                let mut old = mem::replace(body, c);
+                                let old: &'b Constr = o.remove();
+                                let body = ctx.constr_arena.alloc(c);
                                 (body, old)
                             } else {
                                 // Rel is a free variable without a body.
@@ -445,9 +445,8 @@ impl<'id, 'a, 'b, T> Infos<'id, 'b, T> where T: IRepr<'id, 'a, 'b> {
                             // here (which take_mut would also do for safety reasons).
                             match T::i_repr(&set, body, ctx) {
                                 Ok(c) => v.insert(c),
-                                Err((e, body)) => {
-                                    mem::replace(body, old);
-                                    l.insert(i, body);
+                                Err((e, _)) => {
+                                    l.insert(i, old);
                                     return Err(e)
                                 },
                             }
@@ -2497,8 +2496,8 @@ impl Constr {
 impl<'id, 'a, 'b, T> Infos<'id, 'b, T> {
     /// NOTE: This expects rel_context to be in reversed order from the OCaml implementation
     /// (which is a list that is foldr'd, hence iterated in reverse order).
-    fn defined_rels<I>(rel_context: I) -> IdxResult<(u32, VecMap<&'b mut Constr>)>
-        where I: Iterator<Item=&'b mut RDecl>
+    fn defined_rels<I>(rel_context: I) -> IdxResult<(u32, VecMap<&'b Constr>)>
+        where I: Iterator<Item=&'b RDecl>
     {
         let mut i = 0u32;
         // TODO: If we had an ExactSizeIterator or something, we would be able to know we were in
@@ -2508,7 +2507,7 @@ impl<'id, 'a, 'b, T> Infos<'id, 'b, T> {
                 let res = match *decl {
                     RDecl::LocalAssum(_, _) => None,
                     // FIXME: Verify that u32 to usize is always a valid cast.
-                    RDecl::LocalDef(_, ref mut body, _) => Some(Ok((i as usize, body))),
+                    RDecl::LocalDef(_, ref body, _) => Some(Ok((i as usize, body))),
                 };
                 i = match i.checked_add(1) {
                     Some(i) => i,
@@ -2522,7 +2521,7 @@ impl<'id, 'a, 'b, T> Infos<'id, 'b, T> {
     /// NOTE: This expects rel_context to be in reversed order from the OCaml implementation
     /// (which is a list that is foldr'd, hence iterated in reverse order).
     pub fn create<I>(set: Set<'id>, flgs: Reds, rel_context: I) -> IdxResult<Self>
-        where I: Iterator<Item=&'b mut RDecl>
+        where I: Iterator<Item=&'b RDecl>
     {
         Ok(Infos {
             set: set,

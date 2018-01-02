@@ -1075,11 +1075,11 @@ impl PUniverses<Ind> {
     ///
     /// NOTE: Postcondition:
     ///
-    ///       ∃ (lc : list constr) (ty : constr), ∀ lb : list (constr * constr), len lb = len lc →
-    ///       env ⊢ c : (Ind self) largs →
-    ///       env ⊢ p : pj →
-    ///       (∀ i : nat, 0 ≤ i < len lc → env ⊢ lb[i].0 : lb[i].1 ∧ env ⊨ lb[i].1 ≡ lc[i]) →
-    ///       env ⊢ match c return p with map fst lb end : ty
+    /// ∃ (lc : list constr) (ty : constr), ∀ lb : list (constr * constr), len lb = len lc →
+    /// env ⊢ c : (Ind self) largs →
+    /// env ⊢ p : pj →
+    /// (∀ i : nat, 0 ≤ i < len lc → env ⊢ lb[i].0 : lb[i].1 ∧ env ⊨ lb[i].1 ≡ lc[i]) →
+    /// env ⊢ match c [as c'] return p with map fst lb end : ty
     pub fn type_case_branches<'e, 'b, 'g>(&self, env: &'e mut Env<'b, 'g>, largs: &[&Constr],
                                           p: &Constr, pj: &Constr, c: &Constr) ->
             CaseResult<'e, 'b, 'g, (&'e mut Env<'b, 'g>, Vec<Constr>, Constr)> {

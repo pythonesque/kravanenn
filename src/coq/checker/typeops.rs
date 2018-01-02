@@ -1002,18 +1002,18 @@ impl<'b, 'g> Env<'b, 'g> {
     ///
     /// NOTE: Precondition:
     ///
-    ///       ∀ i : nat, 0 ≤ i < len par.param_levels →
-    ///       ∃ u : level, par.param_levels[i] = Some u →
-    ///       ∃ ty : constr, params[i] = LocalAssum(_, ty) →
-    ///       ∃ s : constr, self; params[0..i] ⊢ ty : s
+    /// ∀ i : nat, 0 ≤ i < len par.param_levels →
+    /// ∃ u : level, par.param_levels[i] = Some u →
+    /// ∃ ty : constr, params[i] = LocalAssum(_, ty) →
+    /// ∃ s : constr, self; params[0..i] ⊢ ty : s
     ///
     /// NOTE: Postcondition:
     ///
-    ///       ∀ i : nat, 0 ≤ i < len par.param_levels →
-    ///       ∃ u : level, par.param_levels[i] = Some u →
-    ///       ∃ (ty : constr) (ctx : rel_context),
-    ///       params[i] = LocalAssum(_, ty) ∧
-    ///       self; params[0..i] ⊨ ty ≡ mk_arity ctx (Sort (Type [u]))
+    /// ∀ i : nat, 0 ≤ i < len par.param_levels →
+    /// ∃ u : level, par.param_levels[i] = Some u →
+    /// ∃ (ty : constr) (ctx : rel_context),
+    /// params[i] = LocalAssum(_, ty) ∧
+    /// self; params[0..i] ⊨ ty ≡ mk_arity ctx (Sort (Type [u]))
     pub fn check_polymorphic_arity<'e, I>(&mut self, mut params: I,
                                           par: &PolArity) -> CaseResult<'e, 'b, 'g, ()>
         where

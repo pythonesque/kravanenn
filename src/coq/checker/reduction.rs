@@ -371,7 +371,7 @@ impl Constr {
     /// Note: self must be type-checked beforehand!
     ///
     /// Mutates self in place; see whd_betaiotazeta for more information.
-    pub fn whd_all<'b, 'g>(&mut self, env: &mut Env<'b, 'g>) -> RedResult<()>
+    pub fn whd_all<'b, 'g>(&mut self, env: &Env<'b, 'g>) -> RedResult<()>
         where 'g: 'b,
     {
         match *self {
@@ -379,10 +379,7 @@ impl Constr {
             Constr::Ind(_) | Constr::Construct(_) | Constr::Prod(_) | Constr::Lambda(_) |
             Constr::Fix(_) | Constr::CoFix(_) => Ok(()),
             _ => {
-                let Env { ref mut globals, ref mut rel_context, .. } = *env;
-                // NOTE: We must clone the rel_context because it may be mutated in place in
-                // order to perform appropriate lifts.
-                let mut rel_context = rel_context.clone();
+                let Env { ref globals, ref rel_context, .. } = *env;
                 *self = Set::new( |set| {
                     let constr_arena = Arena::with_capacity(0x2000);
                     let (fconstr_arena, term_arena);
@@ -394,7 +391,7 @@ impl Constr {
                     // the OCaml implementation, and rel_context is also in reverse order from the
                     // Ocaml implementation, providing a forwards iterator is correct.
                     let mut infos = Infos::create(set, Reds::BETADELTAIOTA,
-                                                  rel_context.iter_mut())?;
+                                                  rel_context.iter())?;
                     let v = self.inject(&infos.set, ctx)?;
                     v.whd_val(&mut infos, globals, ctx)
                 } )?;
@@ -406,7 +403,7 @@ impl Constr {
     /// Note: self must be type-checked beforehand!
     ///
     /// Mutates self in place; see whd_betaiotazeta for more information.
-    pub fn whd_allnolet<'b, 'g>(&mut self, env: &mut Env<'b, 'g>) -> RedResult<()>
+    pub fn whd_allnolet<'b, 'g>(&mut self, env: &Env<'b, 'g>) -> RedResult<()>
         where 'g: 'b,
     {
         match *self {
@@ -414,10 +411,7 @@ impl Constr {
             Constr::Ind(_) | Constr::Construct(_) | Constr::Prod(_) | Constr::Lambda(_) |
             Constr::Fix(_) | Constr::CoFix(_) | Constr::LetIn(_) => Ok(()),
             _ => {
-                let Env { ref mut globals, ref mut rel_context, .. } = *env;
-                // NOTE: We must clone the rel_context because it may be mutated in place in
-                // order to perform appropriate lifts.
-                let mut rel_context = rel_context.clone();
+                let Env { ref globals, ref rel_context, .. } = *env;
                 *self = Set::new( |set| {
                     let constr_arena = Arena::with_capacity(0x2000);
                     let (fconstr_arena, term_arena);
@@ -429,7 +423,7 @@ impl Constr {
                     // the OCaml implementation, and rel_context is also in reverse order from the
                     // Ocaml implementation, providing a forwards iterator is correct.
                     let mut infos = Infos::create(set, Reds::BETADELTAIOTANOLET,
-                                                  rel_context.iter_mut())?;
+                                                  rel_context.iter())?;
                     let v = self.inject(&infos.set, ctx)?;
                     v.whd_val(&mut infos, globals, ctx)
                 } )?;
@@ -1267,13 +1261,9 @@ impl<'id, 'id_, 'a, 'c, 'b, 'g> ClosInfos<'id, 'a, 'b> where 'g: 'b {
 
 impl<'b, 'g> Env<'b, 'g> {
     /// Note: t1 and t2 must be type-checked beforehand!
-    fn clos_fconv(&mut self, cv_pb: ConvPb, eager_delta: bool,
-                      t1: &Constr, t2: &Constr) -> ConvResult<()> {
-        let Env { ref mut stratification, ref globals, ref mut rel_context } = *self;
-        // NOTE: We must clone the rel_contexts because they may be mutated in place in order to
-        // perform appropriate lifts.
-        let ref mut rel_context = rel_context.clone();
-        let ref mut rel_context_ = rel_context.clone();
+    fn clos_fconv(&self, cv_pb: ConvPb, eager_delta: bool,
+                  t1: &Constr, t2: &Constr) -> ConvResult<()> {
+        let Env { ref stratification, ref globals, ref rel_context } = *self;
         let univ = stratification.universes();
         let enga = stratification.engagement();
         Set::new( |set| Set::new( |set_| {
@@ -1306,14 +1296,11 @@ impl<'b, 'g> Env<'b, 'g> {
             let infos =
                 Infos::create(set,
                               if eager_delta { Reds::BETADELTAIOTA } else { Reds::BETAIOTAZETA },
-                              rel_context.iter_mut())?;
-            // NOTE: Since the Rust version of create expects a list in reverse order from
-            // the OCaml implementation, and rel_context_ is also in reverse order from the
-            // Ocaml implementation, providing a forwards iterator is correct.
+                              rel_context.iter())?;
             let infos_ =
                 Infos::create(set_,
                               if eager_delta { Reds::BETADELTAIOTA } else { Reds::BETAIOTAZETA },
-                              rel_context_.iter_mut())?;
+                              rel_context.iter())?;
             let v1 = t1.inject(&infos.set, ctx)?;
             let v2 = t2.inject(&infos_.set, ctx_)?;
             let (send, recvstk) = mpsc::sync_channel::<(Stack<(), ()>, _, _)>(0);
@@ -1352,26 +1339,26 @@ impl<'b, 'g> Env<'b, 'g> {
     }
 
     /// Note: t1 and t2 must be type-checked beforehand!
-    fn fconv(&mut self, cv_pb: ConvPb, eager_delta: bool,
+    fn fconv(&self, cv_pb: ConvPb, eager_delta: bool,
              t1: &Constr, t2: &Constr) -> ConvResult<()> {
         if t1.eq(t2) { Ok(()) }
         else { self.clos_fconv(cv_pb, eager_delta, t1, t2) }
     }
 
     /// Note: t1 and t2 must be type-checked beforehand!
-    pub fn conv(&mut self, t1: &Constr, t2: &Constr) -> ConvResult<()> {
+    pub fn conv(&self, t1: &Constr, t2: &Constr) -> ConvResult<()> {
         self.fconv(ConvPb::Conv, false, t1, t2)
     }
 
     /// Note: t1 and t2 must be type-checked beforehand!
-    pub fn conv_leq(&mut self, t1: &Constr, t2: &Constr) -> ConvResult<()> {
+    pub fn conv_leq(&self, t1: &Constr, t2: &Constr) -> ConvResult<()> {
         self.fconv(ConvPb::Cumul, false, t1, t2)
     }
 
     /// option for conversion : no compilation for the checker
     ///
     /// Note: t1 and t2 must be type-checked beforehand!
-    pub fn vm_conv(&mut self, cv_pb: ConvPb, t1: &Constr, t2: &Constr) -> ConvResult<()> {
+    pub fn vm_conv(&self, cv_pb: ConvPb, t1: &Constr, t2: &Constr) -> ConvResult<()> {
         self.fconv(cv_pb, true, t1, t2)
     }
 
