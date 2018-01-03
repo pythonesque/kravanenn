@@ -219,8 +219,6 @@ pub enum FTerm<'id, 'a, 'b> where 'b: 'a, 'id: 'a {
   Proj(&'b Cst, bool, FConstr<'id, 'a, 'b>),
   Fix(MRef<'b, Fix>, usize, Subs<'id, 'a, 'b>),
   CoFix(MRef<'b, CoFix>, usize, Subs<'id, 'a, 'b>),
-  Case(MRef<'b, (CaseInfo, Constr, Constr, Array<Constr>)>, FConstr<'id, 'a, 'b>,
-       FConstr<'id, 'a, 'b>, Vec<FConstr<'id, 'a, 'b>>),
   /// predicate and branches are closures
   CaseT(MRef<'b, (CaseInfo, Constr, Constr, Array<Constr>)>, FConstr<'id, 'a, 'b>,
         Subs<'id, 'a, 'b>),
@@ -250,8 +248,6 @@ pub enum FTerm<'id, 'a, 'b> where 'b: 'a, 'id: 'a {
 /// this at this stage).
 pub enum StackMember<'id, 'a, 'b, Inst, Shft> where 'b: 'a, 'id: 'a {
     App(Vec<FConstr<'id, 'a, 'b>>),
-    Case(MRef<'b, (CaseInfo, Constr, Constr, Array<Constr>)>, FConstr<'id, 'a, 'b>,
-         Vec<FConstr<'id, 'a, 'b>>, Inst),
     CaseT(MRef<'b, (CaseInfo, Constr, Constr, Array<Constr>)>, Subs<'id, 'a, 'b>, Inst),
     Proj(usize, usize, &'b Cst, bool, Inst),
     Fix(FConstr<'id, 'a, 'b>, Stack<'id, 'a, 'b, Inst, Shft>, Inst),
@@ -511,7 +507,7 @@ impl RedState {
     }
 }
 
-pub fn clone_vec<'id, 'a, 'b>(v: &[FConstr<'id, 'a, 'b>],
+fn clone_vec<'id, 'a, 'b>(v: &[FConstr<'id, 'a, 'b>],
                               set: &Set<'id>) -> Vec<FConstr<'id, 'a, 'b>> {
     v.iter().map( |x| x.clone(set) ).collect()
 }
@@ -642,22 +638,13 @@ impl<'id, 'a, 'b> FConstr<'id, 'a, 'b> {
                 FTerm::Flex(TableKey::ConstKey(c)) => return Ok(Constr::Const(c.clone())),
                 FTerm::Ind(op) => return Ok(Constr::Ind(op.clone())),
                 FTerm::Construct(op) => return Ok(Constr::Construct(op.clone())),
-                FTerm::Case(ci, ref p, ref c, ref ve) => {
-                    let (ref ci, _, _, _) = **ci;
-                    let p = constr_fun(p, set, &lfts, ctx)?;
-                    let c = constr_fun(c, set, &lfts, ctx)?;
-                    // expensive -- allocates a Vec
-                    let ve: Result<Vec<_>, _> = ve.iter()
-                        .map( |v| constr_fun(v, set, &lfts, ctx) )
-                        .collect();
-                    return Ok(Constr::Case(ORef(Arc::from((ci.clone(), p, c,
-                                                           Array(Arc::from(ve?)))))))
-                },
                 FTerm::CaseT(ci, ref c, ref e) => {
                     /*
                     // FIXME: Do we really need to create a new FTerm here?  Aren't we just going
                     // to immediately turn it back into a Term?  It seems like it would be better
-                    // to just go directly to the logic in FTerm::Case above.
+                    // to just go directly to the logic that used to be in FTerm::Case above.
+                    // NOTE: In fact, this has been updated to do so, but the above comment is left
+                    // for now.
                     let (_, ref p, _, ref ve) = **ci;
                     norm = RedState::Red;
                     term = Cow::Owned(FTerm::Case(ci.clone(), e.mk_clos2(p, ctx)?,
@@ -876,14 +863,6 @@ impl<'id, 'a, 'b> FConstr<'id, 'a, 'b> {
                     term: Cell::new(Some(ctx.term_arena.alloc(t))),
                 }))
             },
-            StackMember::Case(o, p, br, _) => {
-                let norm = set.get(&m.norm).neutr();
-                let t = FTerm::Case(o, p, m.clone(set), br);
-                Ok(Cow::Owned(FConstr {
-                    norm: Cell::new(norm),
-                    term: Cell::new(Some(ctx.term_arena.alloc(t))),
-                }))
-            },
             StackMember::CaseT(o, e, _) => {
                 let norm = set.get(&m.norm).neutr();
                 let t = FTerm::CaseT(o, m.clone(set), e);
@@ -1022,15 +1001,6 @@ impl<'id, 'a, 'b> FConstr<'id, 'a, 'b> {
                     StackMember::App(ref args) => {
                         let norm = set.get(&m.norm).neutr();
                         let t = FTerm::App(m.clone(set), clone_vec(args, set) /* expensive */);
-                        m = Cow::Owned(FConstr {
-                            norm: Cell::new(norm),
-                            term: Cell::new(Some(ctx.term_arena.alloc(t))),
-                        });
-                    },
-                    StackMember::Case(o, ref p, ref br, _) => {
-                        let norm = set.get(&m.norm).neutr();
-                        let t = FTerm::Case(o, p.clone(set), m.clone(set),
-                                            clone_vec(br, set) /* expensive */);
                         m = Cow::Owned(FConstr {
                             norm: Cell::new(norm),
                             term: Cell::new(Some(ctx.term_arena.alloc(t))),
@@ -1969,17 +1939,6 @@ impl<'id, 'a, 'b, S> Stack<'id, 'a, 'b, !, S> { */
                     self.append(clone_vec(b, &info.set) /* expensive */);
                     m = Cow::Borrowed(a);
                 },
-                FTerm::Case(o, ref p, ref t, ref br) => {
-                    if let Cow::Borrowed(m) = m {
-                        // NOTE: We probably only want to bother updating this reference if it's
-                        // shared, right?
-                        self.update(&mut info.set, m, i.clone(), ctx)?;
-                    }
-                    self.push(StackMember::Case(o, p.clone(&info.set),
-                                                clone_vec(br, &info.set) /* expensive */,
-                                                i.clone()));
-                    m = Cow::Borrowed(t);
-                },
                 FTerm::CaseT(o, ref t, ref env) => {
                     if let Cow::Borrowed(m) = m {
                         // NOTE: We probably only want to bother updating this reference if it's
@@ -2161,17 +2120,6 @@ impl<'id, 'a, 'b, S> Stack<'id, 'a, 'b, !, S> { */
                         return Ok(m)
                     };
                     match shead {
-                        StackMember::Case(o, _, mut br, _) => {
-                            let (ref ci, _, _, _) = **o;
-                            // TODO: Verify that this is checked at some point during typechecking.
-                            let npar = usize::try_from(ci.npar).map_err(IdxError::from)?;
-                            args.drop_parameters(&info.set, depth, npar, ctx)?;
-                            // TODO: Verify that this is checked at some point during typechecking.
-                            let c = usize::try_from(c).map_err(IdxError::from)?;
-                            self.extend(args.0.into_iter());
-                            // FIXME: Verify that after typechecking, c > 0.
-                            m = br.remove(c - 1);
-                        },
                         StackMember::CaseT(o, env, i) => {
                             let (ref ci, _, _, ref br) = **o;
                             // TODO: Verify that this is checked at some point during typechecking.
@@ -2213,7 +2161,6 @@ impl<'id, 'a, 'b, S> Stack<'id, 'a, 'b, !, S> { */
                     let m_ = m.clone(&info.set);
                     let (_, mut args) = self.strip_update_shift_app(&mut info.set, m_, ctx)?;
                     match self.last() {
-                        Some(&StackMember::Case(_, _, _, _)) |
                         Some(&StackMember::CaseT(_, _, _)) => {
                             let (fxe,fxbd) = m.fterm(&info.set)
                                 .expect("Tried to lift a locked term")

@@ -1,5 +1,4 @@
 use coq::checker::closure::{
-    self,
     ClosInfos,
     Context,
     FConstr,
@@ -264,9 +263,6 @@ impl<'id, 'a, 'b, Inst, Shft> Stack<'id, 'a, 'b, Inst, Shft> {
                     s1 = stk1.next();
                     s2 = stk2.next();
                 },
-                (Some(&StackMember::Case(_,_,_,_)), Some(&StackMember::Case(_,_,_,_))) |
-                (Some(&StackMember::Case(_,_,_,_)), Some(&StackMember::CaseT(_,_,_))) |
-                (Some(&StackMember::CaseT(_,_,_)), Some(&StackMember::Case(_,_,_,_))) |
                 (Some(&StackMember::CaseT(_,_,_)), Some(&StackMember::CaseT(_,_,_))) => {
                     // TODO: Work out why c1.ci_ind  = c2.ci_ind was commented out in the first
                     // place, in Coq commit 7c290a484d4167d91fbe2de84bba6931e2e2dd8f.
@@ -320,10 +316,6 @@ impl<'id, 'a, 'b, Inst, Shft> Stack<'id, 'a, 'b, Inst, Shft> {
                     let (_, ref p, _, ref br) = **o;
                     stk.push(ZL::Case(o, l.clone() /* expensive */,
                                       env.mk_clos(set, p, ctx)?, env.mk_clos_vect(set, br, ctx)?));
-                },
-                StackMember::Case(o, ref p, ref br, _) => {
-                    stk.push(ZL::Case(o, l.clone() /* expensive */, p.clone(set),
-                                      closure::clone_vec(br, set) /* expensive */));
                 },
             }
         }
@@ -1208,7 +1200,6 @@ impl<'id, 'id_, 'a, 'c, 'b, 'g> ClosInfos<'id, 'a, 'b> where 'g: 'b {
                 },
                 // Should not happen because both (hd1,v1) and (hd2,v2) are in whnf
                 (&FTerm::LetIn(_, _, _, _), _) | (_, &FTerm::LetIn(_, _, _, _)) |
-                (&FTerm::Case(_, _, _, _), _) | (_, &FTerm::Case(_, _, _, _)) |
                 (&FTerm::CaseT(_, _, _), _) | (_, &FTerm::CaseT(_, _, _)) |
                 (&FTerm::App(_, _), _) | (_, &FTerm::App(_, _)) |
                 (&FTerm::Clos(_, _), _) | (_, &FTerm::Clos(_, _)) |
