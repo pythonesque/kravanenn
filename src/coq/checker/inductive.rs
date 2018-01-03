@@ -287,12 +287,12 @@ impl Constr {
     /// Returns None if this does not reduce to an application of an inductive type.
     ///
     /// self should be typechecked beforehand!
-    pub fn find_rectype(&mut self, env: &mut Env) ->
+    pub fn find_rectype(&mut self, env: &Env) ->
         RedResult<Option<(&PUniverses<Ind>, Vec<&Constr>)>>
     {
         // TODO: If everything applied to reverse-order arg lists, we could use a more efficient
         // method here and use an iterator instead of allocating a Vec.
-        self.whd_all(env)?;
+        self.whd_all(env, iter::empty())?;
         let (t, l) = self.decompose_app();
         Ok(match *t {
             Constr::Ind(ref o) => Some((&**o, l)),
@@ -546,7 +546,7 @@ impl<'b, 'g> Env<'b, 'g> {
     /// NOTE: Panics if there are more uniform parameters exp than RDecls ctx.
     ///
     /// NOTE: All args must be typechecked beforehand!
-    fn make_subst<'a1, 'a2, I1, I2>(&mut self, ctx: I1, mut exp: &List<Opt<Level>>,
+    fn make_subst<'a1, 'a2, I1, I2>(&self, ctx: I1, mut exp: &List<Opt<Level>>,
                                     mut args: I2) -> SpecialRedResult<LMap<Univ>>
         where
             I1: Iterator<Item=&'a1 RDecl>,
@@ -598,7 +598,7 @@ impl<'b, 'g> Env<'b, 'g> {
     /// NOTE: Panics if there are more uniform parameters ar.param_levels than RDecls ctx.
     ///
     /// NOTE: All argsorts must be typechecked beforehand!
-    pub fn instantiate_universes<'a1, 'a2, I1, I2>(&mut self, ctx: I1, ar: &PolArity,
+    pub fn instantiate_universes<'a1, 'a2, I1, I2>(&self, ctx: I1, ar: &PolArity,
                                                    argsorts: I2) -> SpecialRedResult<Sort>
         where
             I1: Iterator<Item=&'a1 RDecl>,
@@ -622,7 +622,7 @@ impl<'b, 'g> Env<'b, 'g> {
     ///       ar.param_levels (if mip.arity = TemplateArity(ar)).
     ///
     /// NOTE: All paramtyps must be typechecked beforehand!
-    fn type_of_inductive_gen<'a, I>(&mut self, ((mib, mip), u): (MindSpecif<'g>, &Instance),
+    fn type_of_inductive_gen<'a, I>(&self, ((mib, mip), u): (MindSpecif<'g>, &Instance),
                                     paramtyps: I) -> IndEvaluationResult<Cow<'g, Constr>>
         where
              I: Iterator<Item=&'a Constr>,
@@ -653,7 +653,7 @@ impl<'b, 'g> Env<'b, 'g> {
     ///       ar.param_levels (if mip.0.1.arity = TemplateArity(ar)).
     ///
     /// NOTE: All args must be typechecked beforehand!
-    pub fn type_of_inductive_knowing_parameters<'a, I>(&mut self, mip: (MindSpecif<'g>, &Instance),
+    pub fn type_of_inductive_knowing_parameters<'a, I>(&self, mip: (MindSpecif<'g>, &Instance),
                                                        args: I) ->
                                                        IndEvaluationResult<Cow<'g, Constr>>
         where
@@ -666,7 +666,7 @@ impl<'b, 'g> Env<'b, 'g> {
     ///
     /// NOTE: Panics if the mip arity_ctxt has length less than the number of uniform parameters
     ///       ar.param_levels (if mip.0.1.arity = TemplateArity(ar)).
-    pub fn type_of_inductive(&mut self, mip: (MindSpecif<'g>, &Instance)) ->
+    pub fn type_of_inductive(&self, mip: (MindSpecif<'g>, &Instance)) ->
                              IndEvaluationResult<Cow<'g, Constr>> {
         self.type_of_inductive_knowing_parameters(mip, iter::empty())
     }
@@ -831,34 +831,31 @@ impl PUniverses<Ind> {
                                    ) -> CaseResult<'e, 'b, 'g, (&'e mut Env<'b, 'g>, bool)> {
         let (arsign, _) = self.get_instantiated_arity(specif, params,
                                                       &env.globals.univ_hcons_tbl)?;
+        let mut extra = Vec::new();
         // We remember the old pj for error-checking purposes.
         let mut pt = pj.clone();
-
-        let rdecl_orig_len = env.rel_context.len();
         // NOTE: In the OCaml implementation, we must reverse arsign.  We don't have to do that
         // here, though, because arsign is already reversed from the OCaml implementation.
         for a in arsign {
-            pt.whd_all(env)?; // Mutates in-place
+            pt.whd_all(env, extra.iter())?; // Mutates in-place
             match (pt, a) {
                 (Constr::Prod(o), RDecl::LocalAssum(_, a1_)) => {
                     let (ref na1, ref a1, ref t) = *o;
-                    if let Err(e) = env.conv(a1, &a1_) {
+                    if let Err(e) = env.conv(a1, &a1_, extra.iter()) {
                         return Err(CaseError::from_conv(e, move || {
-                            env.rel_context.truncate(rdecl_orig_len);
                             error_elim_arity(env, self.clone(),
                                              elim_sorts(specif).iter().map(Clone::clone).collect(),
                                              c.clone(), (p.clone(), pj.clone()), None)
                         }))
                     }
-                    env.push_rel(RDecl::LocalAssum(na1.clone(), a1.clone()));
+                    extra.push(RDecl::LocalAssum(na1.clone(), a1.clone()));
                     pt = t.clone();
                 },
                 (pt_, a @ RDecl::LocalDef(_, _, _)) => {
-                    env.push_rel(a);
+                    extra.push(a);
                     pt = pt_.lift(Idx::ONE)?;
                 },
                 _ => {
-                    env.rel_context.truncate(rdecl_orig_len);
                     return Err(Box::new(CaseError::Type(
                                    error_elim_arity(env, self.clone(),
                                                     elim_sorts(specif).iter().map(Clone::clone)
@@ -877,13 +874,12 @@ impl PUniverses<Ind> {
                 // evaluated in the context of env extended with rels for each of its indices.
                 // Happily, this context is exactly env at this point in the program, so we just
                 // need to perform a bunch of sanity checks.
-                env.push_rel(RDecl::LocalAssum(na1.clone(), a1.clone()));
+                extra.push(RDecl::LocalAssum(na1.clone(), a1.clone()));
                 let mut a2 = a2.clone();
                 // First, we need to verify that this is really the only extra argument...
-                a2.whd_all(env)?; // Mutates in-place
-                env.rel_context.pop(); // Always yields an element, but we don't need it anyway.
+                a2.whd_all(env, extra.iter())?; // Mutates in-place
+                extra.pop(); // Always yields an element, but we don't need it anyway.
                 let ksort = if let Constr::Sort(s) = a2 { s.family_of() } else {
-                    env.rel_context.truncate(rdecl_orig_len);
                     return Err(Box::new(CaseError::Type(
                                    error_elim_arity(env, self.clone(),
                                                     elim_sorts(specif).iter().map(Clone::clone)
@@ -898,8 +894,7 @@ impl PUniverses<Ind> {
                 // We have now built dep_ind, the dependent inductive type of self (evaluated in
                 // a world where the indices are at the front of the environment, which is true
                 // of the original env extended with arsign).
-                let res = env.conv(a1, &dep_ind);
-                env.rel_context.truncate(rdecl_orig_len);
+                let res = env.conv(a1, &dep_ind, extra.iter());
                 if let Err(e) = res {
                     return Err(CaseError::from_conv(e, move || {
                         error_elim_arity(env, self.clone(),
@@ -928,7 +923,6 @@ impl PUniverses<Ind> {
                 // precisely corresponded to the arity of pj, and we're left with a sort (as we
                 // wanted).  So all we have to do is make sure we can eliminate inductives of sort
                 // specif into inductives of sort s_.family_of() (the family of the returned sort).
-                env.rel_context.truncate(rdecl_orig_len);
                 if let Err(LocalArity(e)) = s_.family_of().check_allowed_sort(specif) {
                     return Err(Box::new(CaseError::Type(
                                    error_elim_arity(env, self.clone(),
@@ -939,7 +933,6 @@ impl PUniverses<Ind> {
                 (env, false)
             },
             _ => {
-                env.rel_context.truncate(rdecl_orig_len);
                 return Err(Box::new(CaseError::Type(
                                error_elim_arity(env, self.clone(),
                                                 elim_sorts(specif).iter().map(Clone::clone)

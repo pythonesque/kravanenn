@@ -76,7 +76,7 @@ impl<'b, 'g> Env<'b, 'g> {
     /// NOTE: Precondition: ∀ pj ∈ v2, ∃ s : sort, self ⊢ pj : s
     ///
     /// NOTE: Postcondition: ∀ i : nat, self ⊨ v1[i] ≡ v2[i]
-    fn conv_leq_vecti<I1, I2, T1, T2, E2>(&mut self, v1: I1,
+    fn conv_leq_vecti<I1, I2, T1, T2, E2>(&self, v1: I1,
                                           v2: I2) -> Result<(), (usize, Box<ConvError>)>
         where
             I1: Iterator<Item=T1>,
@@ -88,7 +88,9 @@ impl<'b, 'g> Env<'b, 'g> {
         // NOTE: ExactSizeIterator would make enforcing the above a bit nicer.
         for (i, (t1, t2)) in v1.zip(v2).enumerate() {
             let t2 = match t2 { Ok(t2) => t2, Err(e) => return Err((i, e.into())), };
-            if let Err(o) = self.conv_leq(t1.borrow(), t2.borrow()) { return Err((i, o)) }
+            if let Err(o) = self.conv_leq(t1.borrow(), t2.borrow(), iter::empty()) {
+                return Err((i, o))
+            }
         }
         Ok(())
     }
@@ -112,7 +114,7 @@ impl<'b, 'g> Env<'b, 'g> {
     /// NOTE: Postcondition: ∃ s : sort, self ⊨ ty ≡ s
     fn type_judgment<'e, 'a>(&'e mut self, c: &Constr, ty: &'a mut Constr, ty_: &Constr,
                             ) -> CaseResult<'e, 'b, 'g, (&'e mut Self, &'a Sort)> {
-        ty.whd_all(self)?; // Mutates in-place.
+        ty.whd_all(self, iter::empty())?; // Mutates in-place.
         match *ty {
             Constr::Sort(ref s) => Ok((self, s)),
             _ => Err(Box::new(CaseError::Type(error_not_type(self, (c.clone(), ty_.clone()))))),
@@ -128,7 +130,7 @@ impl<'b, 'g> Env<'b, 'g> {
     fn assumption_of_judgment<'e, 'a>(&'e mut self, c: &Constr, ty: &Constr,
                                      ) -> CaseResult<'e, 'b, 'g, &'e mut Self> {
         let mut ty_ = ty.clone(); // We remember the original ty for error reporting purposes.
-        ty_.whd_all(self)?; // Mutates in-place.
+        ty_.whd_all(self, iter::empty())?; // Mutates in-place.
         match ty_ {
             Constr::Sort(_) => Ok(self),
             _ => Err(Box::new(CaseError::Type(error_assumption(self, (c.clone(), ty.clone()))))),
@@ -179,7 +181,7 @@ impl<'b, 'g> Env<'b, 'g> {
     /// NOTE: Precondition (ignoring template arity): ∃ s : sort, self ⊢ t : s
     ///
     /// NOTE: Postcondition (ignoring template arity): ∃ s : sort, self ⊢ t : s
-    fn type_of_constant_type_knowing_parameters<'a1, 'a2, I>(&mut self, t: Cow<'a1, CstType>,
+    fn type_of_constant_type_knowing_parameters<'a1, 'a2, I>(&self, t: Cow<'a1, CstType>,
                                                              paramtyps: I,
                                                             ) -> SpecialRedResult<Cow<'a1, Constr>>
         where
@@ -225,7 +227,7 @@ impl<'b, 'g> Env<'b, 'g> {
     ///
     ///       ∃ (ty : constr) (s : sort) (cu : context), self ⊨ consistent cu →
     ///                                                  self ⊢ Const [u]δ : ty ∧ self ⊢ ty : s
-    fn type_of_constant_knowing_parameters<'a, I>(&mut self, cst: &PUniverses<Cst>,
+    fn type_of_constant_knowing_parameters<'a, I>(&self, cst: &PUniverses<Cst>,
                                                   paramtyps: I) ->
             Option<IndEvaluationResult<(Cow<'g, Constr>, HashSet<UnivConstraint>)>>
         where
@@ -244,7 +246,7 @@ impl<'b, 'g> Env<'b, 'g> {
     /// NOTE: Precondition (ignoring template arity): ∃ s : sort, self ⊢ t : s
     ///
     /// NOTE: Postcondition (ignoring template arity): ∃ s : sort, self ⊢ t : s
-    pub fn type_of_constant_type<'a>(&mut self,
+    pub fn type_of_constant_type<'a>(&self,
                                      t: &'a CstType) -> SpecialRedResult<Cow<'a, Constr>> {
         self.type_of_constant_type_knowing_parameters(Cow::Borrowed(t), iter::empty())
     }
@@ -257,7 +259,7 @@ impl<'b, 'g> Env<'b, 'g> {
     ///
     /// NOTE: Panics if there are more uniform parameters ar.param_levels than RDecls sign
     ///       (if ty = TemplateArity(sign, ar), where ty = self.globals.constant_type(cst)).
-    fn type_of_constant(&mut self, cst: &Cst
+    fn type_of_constant(&self, cst: &Cst
                        ) -> Option<IndEvaluationResult<(Cow<'g, Constr>, HashSet<UnivConstraint>)>>
     {
         self.type_of_constant_knowing_parameters(cst, &[])
@@ -336,11 +338,11 @@ impl<'b, 'g> Env<'b, 'g> {
     {
         let mut typ = funj.clone(); // We remember the old funj for error reporting purposes.
         for (n, &(h, ref hj)) in argjv.clone().enumerate() {
-            typ.whd_all(self)?; // Mutates in-place
+            typ.whd_all(self, iter::empty())?; // Mutates in-place
             match typ {
                 Constr::Prod(o) => {
                     let (_, ref c1, ref c2) = *o;
-                    if let Err(e) = self.conv(hj, c1) {
+                    if let Err(e) = self.conv(hj, c1, iter::empty()) {
                         return Err(CaseError::from_conv(e, move ||
                             // NOTE: n + 1 is always in-bounds for usize because argjv.len() must
                             // be isize::MAX or smaller (provided pointers are at least 1 byte and
@@ -427,8 +429,8 @@ impl<'b, 'g> Env<'b, 'g> {
     fn judge_of_cast<'e>(&'e mut self, c: &Constr, cj: &Constr, k: Cast,
                          tj: &Constr) -> CaseResult<'e, 'b, 'g, &'e mut Self> {
         let conversion = match k {
-            Cast::VMCast | Cast::NATIVECast => self.vm_conv(ConvPb::Cumul, cj, tj),
-            Cast::DEFAULTCast => self.conv_leq(cj, tj),
+            Cast::VMCast | Cast::NATIVECast => self.vm_conv(ConvPb::Cumul, cj, tj, iter::empty()),
+            Cast::DEFAULTCast => self.conv_leq(cj, tj, iter::empty()),
             // FIXME: Figure out why we should even have to try to handle this case;
             //        it shouldn't be possible to load this from a .vo file!
             Cast::RevertCast => panic!("This should *never* appear in a .vo file!"),
@@ -469,7 +471,7 @@ impl<'b, 'g> Env<'b, 'g> {
     /// NOTE: Postcondition (ignoring template arity):
     ///
     ///       ∃ (ty : constr) (s : sort), self ⊢ Ind [ind.1]ind.0 : ty ∧ self ⊢ ty : s
-    fn judge_of_inductive_knowing_parameters<'a, 'e, I>(&mut self, ind: &PUniverses<Ind>,
+    fn judge_of_inductive_knowing_parameters<'a, 'e, I>(&self, ind: &PUniverses<Ind>,
                                                         paramstyp: I) ->
             CaseResult<'e, 'b, 'g, Cow<'g, Constr>>
         where
@@ -496,7 +498,7 @@ impl<'b, 'g> Env<'b, 'g> {
     /// NOTE: Postcondition (ignoring template arity):
     ///
     ///       ∃ (ty : constr) (s : sort), self ⊢ Ind [ind.1]ind.0 : ty ∧ self ⊢ ty : s
-    fn judge_of_inductive<'e>(&mut self,
+    fn judge_of_inductive<'e>(&self,
                               ind: &PUniverses<Ind>) -> CaseResult<'e, 'b, 'g, Cow<'g, Constr>> {
         self.judge_of_inductive_knowing_parameters(ind, iter::empty())
     }
@@ -987,8 +989,13 @@ impl<'b, 'g> Env<'b, 'g> {
     ///
     ///       ∃ (ctx : rel_context),
     ///       self ⊨ ar ≡ mk_arity ctx (Sort (Type [u]))
-    fn check_kind<'e>(&mut self, ar: Constr, u: Level) -> CaseResult<'e, 'b, 'g, ()> {
-        if let Constr::Sort(ref o) = self.dest_prod(ar)?.1 {
+    fn check_kind<'a, 'e, I>(&self, ar: Constr, u: Level, prefix: I) -> CaseResult<'e, 'b, 'g, ()>
+        where
+            I: Iterator<Item=&'a RDecl> + Clone,
+    {
+        // TODO: We don't really need to allocate the vector returned by dest_prod here; we can
+        // just reuse the vector in check_polymorphic_arity instead.
+        if let Constr::Sort(ref o) = self.dest_prod(ar, prefix)?.1 {
             if let Sort::Type(ref u_) = **o {
                 if u_.equal(&Univ::make(u, &self.globals.univ_hcons_tbl)?) { return Ok(()) }
             }
@@ -1014,29 +1021,25 @@ impl<'b, 'g> Env<'b, 'g> {
     /// ∃ (ty : constr) (ctx : rel_context),
     /// params[i] = LocalAssum(_, ty) ∧
     /// self; params[0..i] ⊨ ty ≡ mk_arity ctx (Sort (Type [u]))
-    pub fn check_polymorphic_arity<'e, I>(&mut self, mut params: I,
+    pub fn check_polymorphic_arity<'e, I>(&self, mut params: I,
                                           par: &PolArity) -> CaseResult<'e, 'b, 'g, ()>
         where
             I: Iterator<Item=RDecl>,
     {
         const ERR : &'static str = "check_poly: not the right number of params";
         let pl = &par.param_levels;
-        let rdecl_orig_len = self.rel_context.len();
+        let mut rels = Vec::new();
         // NOTE: In the OCaml version, params is reversed before iterating, but here the iterator
         // is already reversed so we do nothing.
         for p in pl.iter() {
             let d = params.next().ok_or_else(|| Box::new(CaseError::Failure(ERR.into())))?;
             if let Some(ref u) = *p {
                 if let RDecl::LocalAssum(_, ref ty) = d {
-                    self.check_kind(ty.clone(), u.clone())?
+                    self.check_kind(ty.clone(), u.clone(), rels.iter())?
                 } else { return Err(Box::new(CaseError::Failure(ERR.into()))) }
             }
-            self.push_rel(d);
+            rels.push(d);
         }
-        // Make sure to unwind the rel_context on success.
-        // Note that we currently don't pop the rel if there was an error, even if it
-        // wasn't a TypeError that consumed the env.
-        self.rel_context.truncate(rdecl_orig_len);
         Ok(())
     }
 }

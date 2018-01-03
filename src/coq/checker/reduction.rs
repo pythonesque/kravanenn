@@ -371,8 +371,10 @@ impl Constr {
     /// Note: self must be type-checked beforehand!
     ///
     /// Mutates self in place; see whd_betaiotazeta for more information.
-    pub fn whd_all<'b, 'g>(&mut self, env: &Env<'b, 'g>) -> RedResult<()>
-        where 'g: 'b,
+    pub fn whd_all<'a, 'b, 'g, I>(&mut self, env: &'a Env<'b, 'g>, extra: I) -> RedResult<()>
+        where
+            'g: 'b,
+            I: Iterator<Item=&'a RDecl>,
     {
         match *self {
             Constr::Sort(_) | /* Constr::Meta(_) | Constr::Evar(_) |*/
@@ -391,7 +393,7 @@ impl Constr {
                     // the OCaml implementation, and rel_context is also in reverse order from the
                     // Ocaml implementation, providing a forwards iterator is correct.
                     let mut infos = Infos::create(set, Reds::BETADELTAIOTA,
-                                                  rel_context.iter())?;
+                                                  rel_context.iter().chain(extra))?;
                     let v = self.inject(&infos.set, ctx)?;
                     v.whd_val(&mut infos, globals, ctx)
                 } )?;
@@ -403,8 +405,10 @@ impl Constr {
     /// Note: self must be type-checked beforehand!
     ///
     /// Mutates self in place; see whd_betaiotazeta for more information.
-    pub fn whd_allnolet<'b, 'g>(&mut self, env: &Env<'b, 'g>) -> RedResult<()>
-        where 'g: 'b,
+    pub fn whd_allnolet<'a, 'b, 'g, I>(&mut self, env: &'a Env<'b, 'g>, extra: I) -> RedResult<()>
+        where
+            'g: 'b,
+            I: Iterator<Item=&'a RDecl>,
     {
         match *self {
             Constr::Sort(_) | /* Constr::Meta(_) | Constr::Evar(_) |*/
@@ -423,7 +427,7 @@ impl Constr {
                     // the OCaml implementation, and rel_context is also in reverse order from the
                     // Ocaml implementation, providing a forwards iterator is correct.
                     let mut infos = Infos::create(set, Reds::BETADELTAIOTANOLET,
-                                                  rel_context.iter())?;
+                                                  rel_context.iter().chain(extra))?;
                     let v = self.inject(&infos.set, ctx)?;
                     v.whd_val(&mut infos, globals, ctx)
                 } )?;
@@ -1261,8 +1265,11 @@ impl<'id, 'id_, 'a, 'c, 'b, 'g> ClosInfos<'id, 'a, 'b> where 'g: 'b {
 
 impl<'b, 'g> Env<'b, 'g> {
     /// Note: t1 and t2 must be type-checked beforehand!
-    fn clos_fconv(&self, cv_pb: ConvPb, eager_delta: bool,
-                  t1: &Constr, t2: &Constr) -> ConvResult<()> {
+    fn clos_fconv<'a, I>(&'a self, cv_pb: ConvPb, eager_delta: bool,
+                         t1: &Constr, t2: &Constr, extra: I) -> ConvResult<()>
+        where
+            I: Iterator<Item=&'a RDecl> + Clone,
+    {
         let Env { ref stratification, ref globals, ref rel_context } = *self;
         let univ = stratification.universes();
         let enga = stratification.engagement();
@@ -1296,11 +1303,11 @@ impl<'b, 'g> Env<'b, 'g> {
             let infos =
                 Infos::create(set,
                               if eager_delta { Reds::BETADELTAIOTA } else { Reds::BETAIOTAZETA },
-                              rel_context.iter())?;
+                              rel_context.iter().chain(extra.clone()))?;
             let infos_ =
                 Infos::create(set_,
                               if eager_delta { Reds::BETADELTAIOTA } else { Reds::BETAIOTAZETA },
-                              rel_context.iter())?;
+                              rel_context.iter().chain(extra))?;
             let v1 = t1.inject(&infos.set, ctx)?;
             let v2 = t2.inject(&infos_.set, ctx_)?;
             let (send, recvstk) = mpsc::sync_channel::<(Stack<(), ()>, _, _)>(0);
@@ -1339,27 +1346,38 @@ impl<'b, 'g> Env<'b, 'g> {
     }
 
     /// Note: t1 and t2 must be type-checked beforehand!
-    fn fconv(&self, cv_pb: ConvPb, eager_delta: bool,
-             t1: &Constr, t2: &Constr) -> ConvResult<()> {
+    fn fconv<'a, I>(&'a self, cv_pb: ConvPb, eager_delta: bool,
+                    t1: &Constr, t2: &Constr, extra: I) -> ConvResult<()>
+        where I: Iterator<Item=&'a RDecl> + Clone,
+    {
         if t1.eq(t2) { Ok(()) }
-        else { self.clos_fconv(cv_pb, eager_delta, t1, t2) }
+        else { self.clos_fconv(cv_pb, eager_delta, t1, t2, extra) }
     }
 
     /// Note: t1 and t2 must be type-checked beforehand!
-    pub fn conv(&self, t1: &Constr, t2: &Constr) -> ConvResult<()> {
-        self.fconv(ConvPb::Conv, false, t1, t2)
+    pub fn conv<'a, I>(&'a self, t1: &Constr, t2: &Constr, extra: I) -> ConvResult<()>
+        where I: Iterator<Item=&'a RDecl> + Clone,
+    {
+        self.fconv(ConvPb::Conv, false, t1, t2, extra)
     }
 
     /// Note: t1 and t2 must be type-checked beforehand!
-    pub fn conv_leq(&self, t1: &Constr, t2: &Constr) -> ConvResult<()> {
-        self.fconv(ConvPb::Cumul, false, t1, t2)
+    pub fn conv_leq<'a, I>(&'a self, t1: &Constr, t2: &Constr, extra: I) -> ConvResult<()>
+        where
+            I: Iterator<Item=&'a RDecl> + Clone,
+    {
+        self.fconv(ConvPb::Cumul, false, t1, t2, extra)
     }
 
     /// option for conversion : no compilation for the checker
     ///
     /// Note: t1 and t2 must be type-checked beforehand!
-    pub fn vm_conv(&self, cv_pb: ConvPb, t1: &Constr, t2: &Constr) -> ConvResult<()> {
-        self.fconv(cv_pb, true, t1, t2)
+    pub fn vm_conv<'a, I>(&'a self, cv_pb: ConvPb, t1: &Constr, t2: &Constr,
+                          extra: I) -> ConvResult<()>
+        where
+            I: Iterator<Item=&'a RDecl> + Clone,
+    {
+        self.fconv(cv_pb, true, t1, t2, extra)
     }
 
     /// Special-Purpose Reduction
@@ -1375,7 +1393,7 @@ impl<'b, 'g> Env<'b, 'g> {
     ///
     /// NOTE: t must be typechecked beforehand!
     fn hnf_prod_app(&self, mut t: Constr, n: &Constr) -> SpecialRedResult<Constr> {
-        t.whd_all(self)?;
+        t.whd_all(self, iter::empty())?;
         match t {
             Constr::Prod(o) => {
                 let (_, _, ref b) = *o;
@@ -1400,20 +1418,22 @@ impl<'b, 'g> Env<'b, 'g> {
     /// Recognizing products and arities modulo reduction
     ///
     /// NOTE: c must be type-checked beforehand!
-    pub fn dest_prod(&mut self, mut c: Constr) -> RedResult<(Vec<RDecl>, Constr)> {
+    pub fn dest_prod<'a, I>(&self, mut c: Constr, prefix: I) -> RedResult<(Vec<RDecl>, Constr)>
+        where
+            I: Iterator<Item=&'a RDecl> + Clone,
+    {
         let mut m = Vec::new();
-        let orig_len = self.rel_context.len();
         loop {
-            if let Err(e) = c.whd_all(self) { self.rel_context.truncate(orig_len); return Err(e) }
+            let prefix = prefix.clone();
+            c.whd_all(self, prefix.map( |d| d.borrow()).chain(m.iter()))?;
             match c {
                 Constr::Prod(o) => {
                     let (ref n, ref a, ref c0) = *o;
                     let d = RDecl::LocalAssum(n.clone(), a.clone());
-                    self.push_rel(d.clone());
                     m.push(d);
                     c = c0.clone();
                 },
-                _ => { self.rel_context.truncate(orig_len); return Ok((m, c)) }
+                _ => { return Ok((m, c)) }
             }
         }
     }
@@ -1421,25 +1441,20 @@ impl<'b, 'g> Env<'b, 'g> {
     /// The same but preserving lets in the context, not internal ones.
     ///
     /// Note: ty must be type-checked beforehand!
-    pub fn dest_prod_assum(&mut self, mut ty: Constr) -> RedResult<(Vec<RDecl>, Constr)> {
+    pub fn dest_prod_assum(&self, mut ty: Constr) -> RedResult<(Vec<RDecl>, Constr)> {
         let mut l = Vec::new();
-        let orig_len = self.rel_context.len();
         loop {
-            if let Err(e) = ty.whd_allnolet(self) {
-                self.rel_context.truncate(orig_len); return Err(e)
-            }
+            ty.whd_allnolet(self, l.iter())?;
             match ty {
                 Constr::Prod(o) => {
                     let (ref x, ref t, ref c) = *o;
                     let d = RDecl::LocalAssum(x.clone(), t.clone());
-                    self.push_rel(d.clone());
                     l.push(d);
                     ty = c.clone();
                 },
                 Constr::LetIn(o) => {
                     let (ref x, ref b, ref t, ref c) = *o;
                     let d = RDecl::LocalDef(x.clone(), b.clone(), ORef(Arc::from(t.clone())));
-                    self.push_rel(d.clone());
                     l.push(d);
                     ty = c.clone();
                 },
@@ -1449,10 +1464,8 @@ impl<'b, 'g> Env<'b, 'g> {
                 },
                 _ => {
                     let mut ty_ = ty.clone();
-                    if let Err(e) = ty_.whd_all(self) {
-                        self.rel_context.truncate(orig_len); return Err(e)
-                    }
-                    if ty_.eq(&ty) { self.rel_context.truncate(orig_len); return Ok((l, ty)) }
+                    ty_.whd_all(self, l.iter())?;
+                    if ty_.eq(&ty) { return Ok((l, ty)) }
                     else { ty = ty_; }
                 },
             }
@@ -1460,25 +1473,20 @@ impl<'b, 'g> Env<'b, 'g> {
     }
 
     /// Note: ty must be type-checked beforehand!
-    pub fn dest_lam_assum(&mut self, mut ty: Constr) -> RedResult<(Vec<RDecl>, Constr)> {
+    pub fn dest_lam_assum(&self, mut ty: Constr) -> RedResult<(Vec<RDecl>, Constr)> {
         let mut l = Vec::new();
-        let orig_len = self.rel_context.len();
         loop {
-            if let Err(e) = ty.whd_allnolet(self) {
-                self.rel_context.truncate(orig_len); return Err(e)
-            }
+            ty.whd_allnolet(self, l.iter())?;
             match ty {
                 Constr::Lambda(o) => {
                     let (ref x, ref t, ref c) = *o;
                     let d = RDecl::LocalAssum(x.clone(), t.clone());
-                    self.push_rel(d.clone());
                     l.push(d);
                     ty = c.clone();
                 },
                 Constr::LetIn(o) => {
                     let (ref x, ref b, ref t, ref c) = *o;
                     let d = RDecl::LocalDef(x.clone(), b.clone(), ORef(Arc::from(t.clone())));
-                    self.push_rel(d.clone());
                     l.push(d);
                     ty = c.clone();
                 },
@@ -1492,7 +1500,7 @@ impl<'b, 'g> Env<'b, 'g> {
     }
 
     /// Note: c must be type-checked beforehand!
-    pub fn dest_arity(&mut self, c: Constr) -> SpecialRedResult<Arity> {
+    pub fn dest_arity(&self, c: Constr) -> SpecialRedResult<Arity> {
         let (l, c) = self.dest_prod_assum(c)?;
         match c {
             Constr::Sort(s) => Ok((l, s)),
