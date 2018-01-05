@@ -46,6 +46,10 @@ pub enum DecomposeError {
     Anomaly(String),
 }
 
+pub enum DecomposeNError {
+    UserError(String),
+}
+
 pub struct Substituend<A> {
     info: Cell<Info>,
     it: A,
@@ -244,11 +248,9 @@ impl Constr {
     }
 
 
-    /// (closedn n M) raises LocalOccur if a variable of height greater than n
-    /// occurs in M, returns () otherwise
     fn closed_rec(&self, n: &i64) -> Result<(), SubstError> {
         match *self {
-            Constr::Rel(m) if m > *n => Err(SubstError::LocalOccur),
+            Constr::Rel(m) => if m > *n { Err(SubstError::LocalOccur) } else { Ok(()) },
             _ => self.iter_with_binders(|i| {
                 *i = i.checked_add(1).ok_or(SubstError::Idx(IdxError::from(NoneError)))?;
                 return Ok(())
@@ -256,6 +258,8 @@ impl Constr {
         }
     }
 
+    /// (closedn n M) raises LocalOccur if a variable of height greater than n
+    /// occurs in M, returns () otherwise
     pub fn closedn(&self, n: i64) -> IdxResult<bool> {
         match self.closed_rec(&n) {
             Ok(()) => Ok(true),
@@ -268,6 +272,65 @@ impl Constr {
     pub fn closed0(&self) -> IdxResult<bool> {
         self.closedn(0)
     }
+
+    fn occur_rec(&self, n: &i64) -> Result<(), SubstError> {
+        match *self {
+            Constr::Rel(m) => if m == *n { Err(SubstError::LocalOccur) } else { Ok(()) },
+            _ => self.iter_with_binders(|i| {
+                *i = i.checked_add(1).ok_or(SubstError::Idx(IdxError::from(NoneError)))?;
+                return Ok(())
+            }, Self::occur_rec, n),
+        }
+    }
+
+    /// (noccurn n M) returns true iff (Rel n) does NOT occur in term M
+    pub fn noccurn(&self, n: i64) -> IdxResult<bool> {
+        match self.occur_rec(&n) {
+            Ok(()) => Ok(true),
+            Err(SubstError::LocalOccur) => Ok(false),
+            Err(SubstError::Idx(e)) => Err(e),
+        }
+    }
+
+    fn occur_between_rec(&self, n: &i64, m: i64) -> Result<(), SubstError> {
+        match *self {
+            Constr::Rel(p) =>
+                // p - *n is safe because *n ≤ p.
+                if *n <= p && p - *n < m { Err(SubstError::LocalOccur) } else { Ok(()) },
+            _ => self.iter_with_binders(|i| {
+                *i = i.checked_add(1).ok_or(SubstError::Idx(IdxError::from(NoneError)))?;
+                return Ok(())
+            }, |c, n| c.occur_between_rec(n, m), n),
+        }
+    }
+
+    /// (noccur_between n m M) returns true iff (Rel p) does NOT occur in term M
+    pub fn noccur_between(&self, n: i64, m: i64) -> IdxResult<bool> {
+        match self.occur_between_rec(&n, m) {
+            Ok(()) => Ok(true),
+            Err(SubstError::LocalOccur) => Ok(false),
+            Err(SubstError::Idx(e)) => Err(e),
+        }
+    }
+
+    /* (* Checking function for terms containing existential variables.
+     The function [noccur_with_meta] considers the fact that
+     each existential variable (as well as each isevar)
+     in the term appears applied to its local context,
+     which may contain the CoFix variables. These occurrences of CoFix variables
+     are not considered *)
+
+    let noccur_with_meta n m term =
+      let rec occur_rec n c = match c with
+        | Rel p -> if n<=p && p<n+m then raise LocalOccur
+        | App(f,cl) ->
+        (match f with
+               | (Cast (Meta _,_,_)| Meta _) -> ()
+           | _ -> iter_constr_with_binders succ occur_rec n c)
+        | Evar (_, _) -> ()
+        | _ -> iter_constr_with_binders succ occur_rec n c
+      in
+      try (occur_rec n term; true) with LocalOccur -> false */
 
     /// Lifting
     pub fn map_constr_with_binders<T, G, F, E>(&self, g: G, f: F, l: &T) -> Result<Constr, E>
@@ -569,6 +632,39 @@ impl Constr {
         }
     }
 
+    /// NOTE: The Vec<RDecl> is reversed from the Rctxt that would have been returned by OCaml.
+    pub fn decompose_prod_n_assum(&self,
+                                  n: usize) -> Result<(Vec<RDecl>, &Constr), DecomposeNError> {
+        // TODO: For these sorts of generated definition sets, we don't
+        // really need to perform clone() on the Constrs, since they can
+        // be used by reference.
+        let mut l = Vec::new();
+        let mut c = self;
+        for _ in 0..n {
+            match *c {
+                Constr::Prod(ref o) => {
+                    let (ref x, ref t, ref c_) = **o;
+                    l.push(RDecl::LocalAssum(x.clone(), t.clone()));
+                    c = c_;
+                },
+                Constr::LetIn(ref o) => {
+                    let (ref x, ref b, ref t, ref c_) = **o;
+                    l.push(RDecl::LocalDef(x.clone(), b.clone(), ORef(Arc::from(t.clone()))));
+                    c = c_;
+                },
+                Constr::Cast(ref o) => {
+                    let (ref c_, _, _) = **o;
+                    c = c_;
+                },
+                _ => {
+                    const ERR : &'static str = "decompose_prod_n_assum: not enough assumptions";
+                    return Err(DecomposeNError::UserError(ERR.into()))
+                },
+            }
+        }
+        Ok((l, c))
+    }
+
     /// Other term constructors
 
     pub fn mk_arity<'a, I, F, T, E>(sign: I, s: Sort, to_owned: F) -> Result<Constr, E>
@@ -802,6 +898,21 @@ impl RDecl {
 }
 
 impl Rctxt {
+    /// Differs from the OCaml implementation because it also returns the length.
+    pub fn nhyps(&self) -> (usize, usize) {
+        let mut nhyps = 0;
+        let mut len = 0;
+        // NOTE: All additions are in-bounds because (provided the list is not recursive,
+        // in which case this function will never terminate), each element of the list
+        // takes up at least a byte (actually, a word or more), so the total length of
+        // all of the elements cannot exceed usize.
+        for hyp in self.iter() {
+            if let RDecl::LocalAssum(_, _) = *hyp { nhyps += 1; }
+            len += 1;
+        }
+        (len, nhyps)
+    }
+
     /// NOTE: We change the definition compared to OCaml; instead of a SmartMap,
     /// this just returns an iterator.
     ///
@@ -811,6 +922,34 @@ impl Rctxt {
     {
         self.iter().map( move |d| d.map( |x| x.subst_instance(s, tbl) ) )
     }
+}
+
+/// NOTE: Differs from the OCaml implementation because it returns the
+/// total number of hypotheses.
+pub fn extended_rel_list<'a, I>(hyps: I) -> IdxResult<(Vec<Constr>, Option<Idx>)>
+    where
+        I: Iterator<Item=&'a RDecl>
+{
+    let mut l = Vec::new();
+    // All the ids we generate here will be valid Idxs (though this alone doesn't ensure that
+    // during reduction we don't generate invalid Idxs, it's at least a nice sanity check).
+    // TODO: We can skip most of the checks here since we know the maximum length of hyps ahead
+    // of time.
+    let mut p = Idx::ONE;
+    for h in hyps {
+        if let RDecl::LocalAssum(_, _) = *h {
+           // i32 is always valid to cast to i64
+           l.push(Constr::Rel(i32::from(p) as i64));
+        }
+        p = p.checked_add(Idx::ONE)?;
+    }
+    // TODO: Figure out whether reversing here is really necessary, or we can do something else
+    // (like iterate in reverse order in the loop).
+    l.reverse();
+    // Subtracting 1 from p always returns either a positive (valid) Some(Idx) or None, because
+    // a positive i32 (a valid Idx) - 1 is always a non-negative i32 (a valid non-negative Idx).
+    // Therefore, the expect() is safe.
+    Ok((l, p.checked_sub(Idx::ONE).expect("positive i32 - 1 = non-negative i32")))
 }
 
 impl Sort {

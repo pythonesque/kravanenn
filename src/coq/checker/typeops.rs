@@ -956,13 +956,18 @@ impl<'b, 'g> Env<'b, 'g> {
     /// NOTE: Postcondition: Loosely speaking: each local definition in rels is
     ///       well-typed in the context of all the previous definitions, and env
     ///       includes all the definitions in rels.
+    ///
+    /// NOTE: Unlike the OCaml, which returns the updated environment, we return the old
+    ///       environment (we try to keep the environment pristine on success); it turns
+    ///       out that none of its callers actually want the updated environment.
     pub fn check_ctxt<'e, I>(&'e mut self,
                              rels: I) -> CaseResult<'e, 'b, 'g, &'e mut Self>
         where
             I: Iterator<Item=RDecl>,
     {
-        // fold_rel_context goes backwards; since rels is reversed, we go forwards on it.
+        let rdecl_orig_len = self.rel_context.len();
         let mut env = self;
+        // fold_rel_context goes backwards; since rels is reversed, we go forwards on it.
         for d in rels {
             let env_ = env;
             env = match d {
@@ -978,6 +983,10 @@ impl<'b, 'g> Env<'b, 'g> {
             };
             env.push_rel(d)
         }
+        // Make sure to unwind the rel_context on success.
+        // Note that we currently don't pop the rel if there was an error, even if it
+        // wasn't a TypeError that consumed the env.
+        env.rel_context.truncate(rdecl_orig_len);
         Ok(env)
     }
 

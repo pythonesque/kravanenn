@@ -48,6 +48,11 @@ version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
+name = "fnv"
+version = "1.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
 name = "fuchsia-zircon"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -71,6 +76,7 @@ dependencies = [
  "byteorder 0.5.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "cuckoo 0.1.0 (git+https://github.com/pythonesque/libcuckoo.rs?branch=wip)",
  "fixedbitset 0.1.8 (registry+https://github.com/rust-lang/crates.io-index)",
+ "fnv 1.0.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "lazy-init 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "light_arena 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "movecell 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -269,6 +275,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 "checksum cuckoo 0.1.0 (git+https://github.com/pythonesque/libcuckoo.rs?branch=wip)" = "<none>"
 "checksum either 1.4.0 (registry+https://github.com/rust-lang/crates.io-index)" = "740178ddf48b1a9e878e6d6509a1442a2d42fd2928aae8e7a6f8a36fb01981b3"
 "checksum fixedbitset 0.1.8 (registry+https://github.com/rust-lang/crates.io-index)" = "85cb8fec437468d86dc7c83ca7cfc933341d561873275f22dd5eedefa63a6478"
+"checksum fnv 1.0.6 (registry+https://github.com/rust-lang/crates.io-index)" = "2fad85553e09a6f881f739c29f0b00b0f01357c743266d478b68951ce23285f3"
 "checksum fuchsia-zircon 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)" = "f6c0581a4e363262e52b87f59ee2afe3415361c6ec35e665924eb08afe8ff159"
 "checksum fuchsia-zircon-sys 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)" = "43f3795b4bae048dc6123a6b972cadde2e676f9ded08aef6bb77f5f157684a82"
 "checksum lazy-init 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)" = "0979a1c8aaff1f4942a596f19c9a9fc85c3ee83a48644a94ca558aac9ac43773"

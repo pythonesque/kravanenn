@@ -2149,12 +2149,7 @@ impl<'id, 'a, 'b, S> Stack<'id, 'a, 'b, !, S> { */
                             // Mutual tail recursion is fine in OCaml, but not Rust.
                             m = self.knh(info, globals, rarg, ctx, i, s.clone())?;
                         },
-                        _ => {
-                            // It was fine on the stack before, so it should be fine now.
-                            self.0.push(shead);
-                            self.extend(args.0.into_iter());
-                            return Ok(m);
-                        },
+                        _ => unreachable!("Shift, update, and app were stripped from head"),
                     }
                 },
                 FTerm::CoFix(_, _, _) if info.flags.contains(Reds::IOTA) => {
@@ -2284,7 +2279,7 @@ impl<'id, 'a, 'b> FTerm<'id, 'a, 'b> {
     ///
     /// Must be passed a FTerm::Fix or FTerm::CoFix.
     /// Also, the term it is passed must be typechecked.
-    fn contract_fix_vect(&self,  ctx: Context<'id, 'a, 'b>) ->
+    fn contract_fix_vect(&self, ctx: Context<'id, 'a, 'b>) ->
         IdxResult<(Subs<'id, 'a, 'b>, &'b Constr)>
     {
         // TODO: This function is *hugely* wasteful.  It allocates a gigantic number of potential

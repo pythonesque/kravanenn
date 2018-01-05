@@ -14,6 +14,7 @@ use coq::checker::reduction::{
 };
 use coq::checker::term::{
     DecomposeError,
+    extended_rel_list,
 };
 use coq::checker::type_errors::{
     ArityError,
@@ -75,7 +76,7 @@ use std::sync::{Arc};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum IndError {
-    Error(String),
+    UserError(String),
     Idx(IdxError),
 }
 
@@ -87,7 +88,7 @@ pub enum IndEvaluationError {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ConsError {
-    Error(String),
+    UserError(String),
     Subst(SubstError),
     Idx(IdxError),
 }
@@ -109,7 +110,6 @@ pub enum CaseError<'e, 'b, 'g> where 'b: 'e, 'g: 'b, {
     UserError(String),
     Subst(SubstError),
     Type(Box<TypeError<'e, 'b, 'g>>),
-    Error(String),
     Failure(String),
 }
 
@@ -196,7 +196,7 @@ impl<'e, 'b, 'g> ::std::convert::From<ParamError> for Box<CaseError<'e, 'b, 'g>>
 impl<'e, 'b, 'g> ::std::convert::From<ConsError> for Box<CaseError<'e, 'b, 'g>> {
     fn from(e: ConsError) -> Self {
         Box::new(match e {
-            ConsError::Error(s) => CaseError::Error(s),
+            ConsError::UserError(s) => CaseError::UserError(s),
             ConsError::Subst(e) => CaseError::Subst(e),
             ConsError::Idx(e) => CaseError::Idx(e),
         })
@@ -206,7 +206,7 @@ impl<'e, 'b, 'g> ::std::convert::From<ConsError> for Box<CaseError<'e, 'b, 'g>> 
 impl<'e, 'b, 'g> ::std::convert::From<IndError> for Box<CaseError<'e, 'b, 'g>> {
     fn from(e: IndError) -> Self {
         Box::new(match e {
-            IndError::Error(s) => CaseError::Error(s),
+            IndError::UserError(s) => CaseError::UserError(s),
             IndError::Idx(e) => CaseError::Idx(e),
         })
     }
@@ -401,7 +401,7 @@ impl<'g> Globals<'g> {
                     None => {
                        const ERR : &'static str =
                            "Inductive.lookup_mind_specif: invalid inductive index";
-                       Err(IndError::Error(ERR.into()))
+                       Err(IndError::UserError(ERR.into()))
                    }
                 }
             }
@@ -672,6 +672,33 @@ impl<'b, 'g> Env<'b, 'g> {
     }
 }
 
+impl Sort {
+    fn cumulate_constructor(&self, u: &mut Univ, tbl: &Huniv) -> IdxResult<()> {
+        match *self {
+            Sort::Prop(SortContents::Null) => Ok(()),
+            Sort::Prop(SortContents::Pos) =>
+                // FIXME: Because we mutate the first argument in-place, we swap the argument
+                // order here compared to the OCaml implementation.  Hopefully, this doesn't
+                // affect the result of sup in any significant way (it *shouldn't*, I think),
+                // but we need to double check this.
+                u.sup(&Univ::type0(tbl), tbl),
+            Sort::Type(ref u_) => u.sup(u_, tbl),
+        }
+    }
+
+    /// The max of an array of universes
+    pub fn max_inductive<'a, I>(sorts: I, tbl: &Huniv) -> IdxResult<Univ>
+        where
+            I: Iterator<Item=&'a Sort>,
+    {
+        let mut u = Univ::type0(tbl);
+        for s in sorts {
+            s.cumulate_constructor(&mut u, tbl)?;
+        }
+        Ok(u)
+    }
+}
+
 impl Cons {
     /// Type of a constructor.
     fn type_of_constructor_subst<'g>(&self, u: &Instance,
@@ -688,10 +715,10 @@ impl Cons {
         match usize::try_from(i).map_err(IdxError::from)?.checked_sub(1) {
             Some(i) => match specif.get(i) {
                 Some(c) => Ok(mib.constructor_instantiate(&ind.name, u, c, tbl)?),
-                None => Err(ConsError::Error("Not enough constructors in the type.".into())),
+                None => Err(ConsError::UserError("Not enough constructors in the type.".into())),
             },
             // TODO: Check to see if this is already checked elsewhere.
-            None => Err(ConsError::Error("Constructor index must be nonzero".into())),
+            None => Err(ConsError::UserError("Constructor index must be nonzero".into())),
         }
     }
 }
@@ -1130,34 +1157,6 @@ impl CaseInfo {
 
 fn elim_sorts<'b>((_, mip): MindSpecif<'b>) -> &'b List<SortFam> {
     &mip.kelim
-}
-
-/// NOTE: Differs from the OCaml implementation because it returns the
-/// total number of hypotheses.
-fn extended_rel_list<'a, I>(hyps: I) -> IdxResult<(Vec<Constr>, Option<Idx>)>
-    where
-        I: Iterator<Item=&'a RDecl>
-{
-    let mut l = Vec::new();
-    // All the ids we generate here will be valid Idxs (though this alone doesn't ensure that
-    // during reduction we don't generate invalid Idxs, it's at least a nice sanity check).
-    // TODO: We can skip most of the checks here since we know the maximum length of hyps ahead
-    // of time.
-    let mut p = Idx::ONE;
-    for h in hyps {
-        if let RDecl::LocalAssum(_, _) = *h {
-           // i32 is always valid to cast to i64
-           l.push(Constr::Rel(i32::from(p) as i64));
-        }
-        p = p.checked_add(Idx::ONE)?;
-    }
-    // TODO: Figure out whether reversing here is really necessary, or we can do something else
-    // (like iterate in reverse order in the loop).
-    l.reverse();
-    // Subtracting 1 from p always returns either a positive (valid) Some(Idx) or None, because
-    // a positive i32 (a valid Idx) - 1 is always a non-negative i32 (a valid non-negative Idx).
-    // Therefore, the expect() is safe.
-    Ok((l, p.checked_sub(Idx::ONE).expect("positive i32 - 1 = non-negative i32")))
 }
 
 /// Guard conditions for fix and cofix-points.

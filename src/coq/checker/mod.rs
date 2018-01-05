@@ -2,6 +2,7 @@ pub mod checker;
 pub mod closure;
 pub mod declarations;
 pub mod environ;
+pub mod indtypes;
 pub mod inductive;
 pub mod reduction;
 pub mod term;

@@ -2,6 +2,7 @@ use coq::checker::univ::{
     Huniv,
     SubstError,
     SubstResult,
+    UnivConstraintResult,
     Universes,
 };
 use coq::kernel::esubst::{
@@ -21,6 +22,7 @@ use core::nonzero::{NonZero};
 use ocaml::values::{
     Cb,
     Constr,
+    Context,
     Cst,
     CstType,
     CstDef,
@@ -41,6 +43,7 @@ use ocaml::values::{
 };
 use std::borrow::{Borrow, Cow};
 use std::collections::{HashSet};
+use std::collections::hash_map::{self};
 use std::fmt::{self};
 
 /// Environments
@@ -218,6 +221,20 @@ impl<'g> Globals<'g> where {
     {
         self.inductives.get(&KnUser(kn)).map( |&v| v )
     }
+
+    pub fn add_mind(&mut self, kn: &'g MutInd, mib: &'g IndPack) -> EnvResult<()> {
+        let Globals { ref mut inductives, ref mut inductives_eq, .. } = *self;
+        let v = if let hash_map::Entry::Vacant(v) = inductives.entry(KnUser(kn)) { v } else {
+            return Err(EnvError::Anomaly(format!("Inductive {:?} is already defined", kn)))
+        };
+        v.insert(mib);
+        let kn1 = kn.user();
+        let kn2 = kn.canonical();
+        if !kn1.equal(kn2) {
+            inductives_eq.insert(KnKey(kn1), kn2.clone());
+        }
+        Ok(())
+    }
 }
 
 impl Stratification {
@@ -227,6 +244,18 @@ impl Stratification {
 
     pub fn engagement(&self) -> &Engagement {
         &self.enga
+    }
+
+    pub fn add_constraints<'a, I>(&mut self, c: I) -> UnivConstraintResult<()>
+        where
+            I: Iterator<Item=&'a UnivConstraint>,
+    {
+        self.universes.merge_constraints(c)
+    }
+
+    pub fn push_context(&mut self, strict: bool, ctx: &Context) -> UnivConstraintResult<()>
+    {
+        self.universes.merge_context(strict, ctx)
     }
 }
 
@@ -248,6 +277,18 @@ impl<'b, 'g> Env<'b, 'g> {
 
     pub fn push_rel(&mut self, d: RDecl) {
         self.rel_context.push(d);
+    }
+
+    /// NOTE: This expects ctxt to be passed in reverse order from the OCaml version.
+    pub fn push_rel_context<I>(&mut self, ctxt: I)
+        where
+            I: Iterator<Item=RDecl>,
+    {
+        // The OCaml version calls fold_rel_context, which iterates ctxt in reverse; since we
+        // are passed an iterator that is already in reverse order, we just iterate normally.
+        for d in ctxt {
+            self.push_rel(d);
+        }
     }
 
     /// NOTE: Unlike the OCaml version, this does not check that lna and typarray have the same

@@ -10,12 +10,14 @@
 #![feature(generic_param_attrs)]
 #![feature(slice_patterns)]
 #![feature(conservative_impl_trait)]
+#![feature(iterator_try_fold)]
 extern crate fixedbitset;
 #[macro_use] extern crate serde_state as serde;
 #[macro_use] extern crate serde_derive_state;
 
 extern crate core;
 extern crate cuckoo;
+extern crate fnv;
 extern crate lazy_init;
 extern crate movecell;
 extern crate rayon;

@@ -5,12 +5,14 @@ use coq::kernel::esubst::{
 use coq::lib::hashcons::{HashconsedType, Hlist, Hstring, Table};
 use coq::lib::hashset::combine;
 use core::convert::TryFrom;
+use fnv::{FnvHashSet, FnvHashMap};
 use ocaml::de::{
     Array,
     ORef,
 };
 use ocaml::values::{
     ConstraintType,
+    Context,
     Cstrs,
     Expr,
     HList,
@@ -21,17 +23,31 @@ use ocaml::values::{
     Univ,
     UnivConstraint,
 };
+use std::borrow::{Cow};
 use std::cmp::{Ord, Ordering};
 use std::collections::{HashSet, HashMap};
+use std::collections::hash_map::{self};
+use std::mem::{self};
 use std::option::{NoneError};
 use std::sync::{Arc};
 
 /// Comparison on this type is pointer equality
+/// TODO: If we do want to use Vecs here, consider using a RingBuf, so we have one contiguous
+/// allocation instead of two, pushing onto the front for le and the back for lt, and using an
+/// index to see where the split happens; this should use less space, and may be faster overall.
 struct CanonicalArc {
     univ: Level,
+    /// NOTE: reversed from the order in the OCaml implementation!
+    /// TODO: consider using a HashSet here.
     lt: Vec<Level>,
+    /// NOTE: reversed from the order in the OCaml implementation!
+    /// TODO: consider using a HashSet here.
     le: Vec<Level>,
-    rank: Int,
+    /// NOTE: consider using a u32 here because because we have an extra bool; if the structure is
+    /// word-aligned and we use a usize, the bool ends up in its own word, which is undesirable.
+    /// Another alternative would be to bit-pack the predicative bit into the rank, but that may be
+    /// premature optimization.
+    rank: usize,
     predicative: bool,
 }
 
@@ -50,6 +66,15 @@ enum UnivEntry {
   Equiv(Level),
 }
 
+
+/// INVARIANT:
+///   max rank (canonical_values self) + len (canonical_values self) ≤ len self
+/// INVARIANT:
+///   Set and Prop:
+///     (1) always have entries in the table;
+///     (2) have canonical instances whose level is also Set / Prop, respectively;
+///     (3) Set < Prop;
+///     (4) ∀ x s.t. x is not small, Prop ≤ x;
 pub struct Universes(UMap<UnivEntry>);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -61,6 +86,17 @@ pub enum UnivError {
 pub enum SubstError {
     NotFound,
     Idx(IdxError),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum UnivConstraintError {
+    /// Universe inconsistency: error raised when trying to enforce a relation
+    /// that would create a cycle in the graph of universes.
+    ///
+    /// NOTE: Unlike OCaml, use Level instead of Universe, since as actually used we never
+    /// instantiate it with universes of more than one level.
+    UniverseInconsistency(ConstraintType, Level, Level),
+    Anomaly(String),
 }
 
 /// Support for universe polymorphism
@@ -78,6 +114,8 @@ pub type Huniv = Helem<Expr, ()>;
 
 pub type UnivResult<T> = Result<T, UnivError>;
 
+pub type UnivConstraintResult<T> = Result<T, Box<UnivConstraintError>>;
+
 pub type SubstResult<T> = Result<T, SubstError>;
 
 pub trait Hashconsed<U> {
@@ -85,6 +123,14 @@ pub trait Hashconsed<U> {
     fn eq(&self, &Self) -> bool;
     fn hcons<'a>(self, &'a U) -> Self
         where Self: ToOwned;
+}
+
+impl ::std::convert::From<UnivError> for Box<UnivConstraintError> {
+    fn from(e: UnivError) -> Self {
+        match e {
+            UnivError::Anomaly(s) => Box::new(UnivConstraintError::Anomaly(s)),
+        }
+    }
 }
 
 impl ::std::convert::From<IdxError> for SubstError {
@@ -326,6 +372,34 @@ impl ::std::hash::Hash for Level {
     }
 }
 
+/// For use in HashSet<CanonicalArc>.
+/// TODO: Consider replacing this with a CanonicalArc wrapper, once it's been ascertained that this
+/// won't cause problems.
+impl ::std::hash::Hash for CanonicalArc {
+    fn hash<H>(&self, state: &mut H)
+        where
+            H: ::std::hash::Hasher,
+    {
+        // Hash pointer
+        (self as *const CanonicalArc).hash(state)
+    }
+}
+
+/// For use in HashSet<CanonicalArc>.
+/// TODO: Consider replacing this with a CanonicalArc wrapper, once it's been ascertained that this
+/// won't cause problems.
+impl PartialEq for CanonicalArc {
+    fn eq(&self, y: &Self) -> bool {
+        // Comparison is pointer equality
+        self as *const _ == y as *const _
+    }
+}
+
+/// For use in HashSet<CanonicalArc>.
+/// TODO: Consider replacing this with a CanonicalArc wrapper, once it's been ascertained that this
+/// won't cause problems.
+impl Eq for CanonicalArc {}
+
 impl Expr {
     fn hequal(&self, l2: &Self) -> bool {
         match (self, l2) {
@@ -359,6 +433,10 @@ impl Hashconsed<()> for Expr {
 }
 
 impl CanonicalArc {
+    fn terminal(u: Level) -> Self {
+        CanonicalArc { univ: u, lt: Vec::new(), le: Vec::new(), rank: 0, predicative: false, }
+    }
+
     /// [compare_neq] : is [arcv] in the transitive upward closure of [arcu] ?
 
     /// In [strict] mode, we fully distinguish between LE and LT, while in
@@ -383,30 +461,38 @@ impl CanonicalArc {
         // [c] characterizes whether arcv has already been related
         // to arcu among the lt_done,le_done universe
         let mut c = FastOrder::NLe;
-        let mut lt_done = Vec::new();
-        let mut le_done = Vec::new();
+        // TODO: Consider allowing reuse of storage between invocations of fast_compare_neq.
+        // NOTE: Using HashSet instead of Vec, contrary to the OCaml implementation.
+        // Unless there are very few entries, this should be faster.
+        let mut lt_done = FnvHashSet::default();
+        let mut le_done = FnvHashSet::default();
         let mut lt_todo : Vec<&CanonicalArc> = Vec::new();
         let mut le_todo = vec![self];
         loop {
             if let Some(arc) = lt_todo.pop() {
-                if !lt_done.iter().any( |&arc_| arc as *const _ == arc_ as *const _) {
-                    for u in arc.le.iter() {
-                        let arc = u.repr(g)?;
+                if lt_done.insert(arc) { // arc was not in lt_done
+                    // Because the le vector in arc is reversed from what it is in OCaml, we
+                    // re-reverse it here.  TODO: Determine whether this is necessary (it seems
+                    // likely that it isn't).
+                    for u in arc.le.iter().rev() {
+                        let arc = u.repr(g)?.0;
                         if arc as *const _ == arcv as *const _ {
                             return Ok(if strict { FastOrder::Lt } else { FastOrder::Le })
                         } else {
                             lt_todo.push(arc);
                         }
                     }
-                    for u in arc.lt.iter() {
-                        let arc = u.repr(g)?;
+                    // Because the lt vector in arc is reversed from what it is in OCaml, we
+                    // re-reverse it here.  TODO: Determine whether this is necessary (it seems
+                    // likely that it isn't).
+                    for u in arc.lt.iter().rev() {
+                        let arc = u.repr(g)?.0;
                         if arc as *const _ == arcv as *const _ {
                             return Ok(if strict { FastOrder::Lt } else { FastOrder::Le })
                         } else {
                             lt_todo.push(arc);
                         }
                     }
-                    lt_done.push(arc);
                 }
             } else if let Some(arc) = le_todo.pop() {
                 // lt_todo = []
@@ -421,10 +507,9 @@ impl CanonicalArc {
                         return Ok(FastOrder::Le);
                     }
                 } else {
-                    if !(lt_done.iter().any( |&arc_| arc as *const _ == arc_ as *const _) ||
-                         le_done.iter().any( |&arc_| arc as *const _ == arc_ as *const _)) {
-                        for u in arc.lt.iter() {
-                            let arc = u.repr(g)?;
+                    if !lt_done.contains(arc) && le_done.insert(arc) { // arc was not in le_done
+                        for u in arc.lt.iter().rev() {
+                            let arc = u.repr(g)?.0;
                             if arc as *const _ == arcv as *const _ {
                                 return Ok(if strict { FastOrder::Lt } else { FastOrder::Le })
                             } else {
@@ -433,10 +518,12 @@ impl CanonicalArc {
                         }
                         // Cannot use .extend here because we need to fail fast on failure.  There
                         // is probably a better way to deal with this.
-                        for u in arc.le.iter() {
-                            le_todo.push(u.repr(g)?);
+                        // Because the le vector in arc is reversed from what it is in OCaml, we
+                        // re-reverse it here.  TODO: Determine whether this is necessary (it seems
+                        // likely that it isn't).
+                        for u in arc.le.iter().rev() {
+                            le_todo.push(u.repr(g)?.0);
                         }
-                        le_done.push(arc);
                     }
                 }
             } else {
@@ -446,11 +533,11 @@ impl CanonicalArc {
         }
     }
 
-    // /// The universe should actually be in the universe map, or else it will return an error.
-    // fn fast_compare(&self, arcv: &Self, g: &Universes) -> UnivResult<FastOrder> {
-    //     if self as *const _ == arcv as *const _ { Ok(FastOrder::Eq) }
-    //     else { self.fast_compare_neq(arcv, true, g) }
-    // }
+    /// The universe should actually be in the universe map, or else it will return an error.
+    fn fast_compare(&self, arcv: &Self, g: &Universes) -> UnivResult<FastOrder> {
+        if self as *const _ == arcv as *const _ { Ok(FastOrder::Eq) }
+        else { self.fast_compare_neq(arcv, true, g) }
+    }
 
     /// The universe should actually be in the universe map, or else it will return an error.
     fn is_leq(&self, arcv: &Self, g: &Universes) -> UnivResult<bool> {
@@ -487,6 +574,13 @@ impl Level {
     const PROP : Self = Level { hash: 7, data: RawLevel::Prop };
     const SET : Self = Level { hash: 8, data: RawLevel::Set };
 
+    fn is_small(&self) -> bool {
+        match self.data {
+            RawLevel::Level(_, _) => false,
+            _ => true,
+        }
+    }
+
     fn is_prop(&self) -> bool {
         match self.data {
             RawLevel::Prop => true,
@@ -513,17 +607,25 @@ impl Level {
     }
 
     /// Every Level.t has a unique canonical arc representative
-
+    ///
     /// repr : universes -> Level.t -> canonical_arc
+    ///
     /// canonical representative : we follow the Equiv links
+    ///
     /// The universe should actually be in the universe map, or else it will return an error.
+    ///
     /// Also note: if the map universe map contains Equiv cycles, this will loop forever!
-    fn repr<'a>(&'a self, g: &'a Universes) -> UnivResult<&CanonicalArc> {
+    ///
+    /// NOTE: Unlike the OCaml implementation, returns a boolean that is true iff the initial entry
+    /// was Canonical (this can be used to help avoid unnecessary clones of the Level in some
+    /// cases).
+    fn repr<'a>(&'a self, g: &'a Universes) -> UnivResult<(&CanonicalArc, bool)> {
         let mut u = self;
+        let mut is_canonical = true;
         loop {
             match g.0.get(u) {
-                Some(&UnivEntry::Equiv(ref v)) => { u = v },
-                Some(&UnivEntry::Canonical(ref arc)) => return Ok(arc),
+                Some(&UnivEntry::Equiv(ref v)) => { is_canonical = false; u = v },
+                Some(&UnivEntry::Canonical(ref arc)) => return Ok((arc, is_canonical)),
                 None =>
                     return Err(UnivError::Anomaly(format!("Univ.repr: Universe {:?} undefined",
                                                           u))),
@@ -546,8 +648,8 @@ impl Level {
 
     /// The universe should actually be in the universe map, or else it will return an error.
     fn check_equal(&self, v: &Level, g: &Universes) -> UnivResult<bool> {
-        let arcu = self.repr(g)?;
-        let arcv = v.repr(g)?;
+        let arcu = self.repr(g)?.0;
+        let arcv = v.repr(g)?.0;
         Ok(arcu as *const _ == arcv as *const _)
     }
 
@@ -558,8 +660,8 @@ impl Level {
 
     /// The universe should actually be in the universe map, or else it will return an error.
     fn check_smaller(&self, v: &Self, strict: bool, g: &Universes) -> UnivResult<bool> {
-        let arcu = self.repr(g)?;
-        let arcv = v.repr(g)?;
+        let arcu = self.repr(g)?.0;
+        let arcv = v.repr(g)?.0;
         if strict {
             arcu.is_lt(arcv, g)
         } else {
@@ -791,7 +893,7 @@ impl Univ {
             }
             Univ::cons(a.clone(), l, tbl)
         }
-        self.iter().fold(Ok(HList::nil()), |acc, a| aux(a, acc?, tbl))
+        self.iter().try_fold(HList::nil(), |acc, a| aux(a, acc, tbl))
     }
 
     /// Returns the formal universe that is greater than the universes u and v.
@@ -881,16 +983,647 @@ impl Univ {
             // TODO: Figure out whether the iterator reversal here is really necessary.
             let substs = subst.iter()
                               .rev()
-                              .fold(Ok(HList::nil()),
-                                    |acc, u| Self::merge_univs(&acc?, u, tbl));
+                              .try_fold(HList::nil(), |acc, u| Self::merge_univs(&acc, u, tbl))?;
             // TODO: Figure out whether the iterator reversal here is really necessary.
             nosubst.into_iter()
                    .rev()
-                   .fold(substs,
-                         |acc, u| Self::merge_univs(&acc?, &Self::tip(u.clone(), tbl)?, tbl))
+                   .try_fold(substs,
+                            |acc, u| Self::merge_univs(&acc, &Self::tip(u.clone(), tbl)?, tbl))
         }
     }
 }
+
+impl ConstraintType {
+    fn error_inconsistency(self, u: Level, v: Level) -> Box<UnivConstraintError> {
+        Box::new(UnivConstraintError::UniverseInconsistency(self, u, v))
+    }
+}
+
+/* impl Context {
+    pub fn make(ctx: Instance, cst: Cstrs) -> Self {
+        Context(ctx, cst)
+    }
+} */
+
+impl Universes {
+    /// Panics if either u does not exist in the map, or the arc to which it directly points is not
+    /// canonical!
+    ///
+    /// Additionally, v should be a valid entry in the map.
+    ///
+    /// (it could return an error, but panicking seems correct everywhere this is used).
+    fn enter_equiv_arc(&mut self, u: &Level, v: Level) -> CanonicalArc {
+        // NOTE: We don't care about any value that was already in the map.
+        let can = self.0.get_mut(u).expect("enter_equiv_arc: level was not in the map");
+        if let UnivEntry::Canonical(ca) = mem::replace(can, UnivEntry::Equiv(v)) {
+            ca
+        } else {
+            panic!("enter_equiv_arc: level was not canonical")
+        }
+    }
+
+    /// Panics if either ca_univ does not exist in the map, or the arc to which it directly
+    /// points is not canonical!
+    ///
+    /// (it could return an error, but panicking seems correct everywhere this is used).
+    fn enter_arc<'a>(&'a mut self, ca_univ: &Level) -> &'a mut CanonicalArc {
+        let can = self.0.get_mut(ca_univ).expect("enter_arc: level was not in the map");
+        if let UnivEntry::Canonical(ref mut ca) = *can {
+            ca
+        } else {
+            panic!("enter_arc: level was not canonical")
+        }
+    }
+
+    /// Panics if self is not properly initialized (which should never happen) or if somehow Set
+    /// has become non-canonical (which should also never happen).
+    fn get_set_arc(&mut self) -> &mut CanonicalArc {
+        let can = self.0.get_mut(&Level::SET).expect("get_set_arc: level was not in the map");
+        if let UnivEntry::Canonical(ref mut ca) = *can {
+            ca
+        } else {
+            panic!("get_set_arc: Level.set was not canonical")
+        }
+    }
+
+    /// NOTE: In the unlikely event that this method panics, invariants are *not* guaranteed to be
+    /// maintained.  Do not mark structures containing Universes PanicSafe!
+    ///
+    /// Returns `Ok(())` if add_universe succeeded, and `Err(())` if the entry already exists.
+    pub fn add_universe(&mut self, vlev: Level, strict: bool) -> Result<(), ()> {
+        {
+            let arcv = if let hash_map::Entry::Vacant(arcv) = self.0.entry(vlev.clone()) {
+                arcv
+            } else { return Err(()) };
+            let v = CanonicalArc::terminal(vlev.clone());
+            arcv.insert(UnivEntry::Canonical(v));
+        }
+        let arc = self.get_set_arc();
+        Ok(if strict { arc.lt.push(vlev) } else { arc.le.push(vlev) })
+    }
+
+    /// reprleq : canonical_arc -> canonical_arc list
+    /// All canonical arcv such that arcu<=arcv with arcv#arcu
+    ///
+    /// NOTE: must have arcu actually in the map before calling this.
+    ///
+    /// NOTE: the returned iterator is in the opposite order from the OCaml implementation!
+    ///
+    /// NOTE: There is an algorithmic difference here; in the OCaml, a list is used but the
+    ///       duplicate canonical arcs are removed.  Here, we simply return an iterator, with
+    ///       duplicates; hopefully the way this is used (in between) should already
+    ///       filter out duplicates anyway before they have a chance to impact the result, and this
+    ///       allows us to not perform any intermediate allocations here or keep searching over the
+    ///       inner list (which may be fast, but still probably not as fast as the hash table
+    ///       lookup except for small numbers of list entries).  TODO: benchmark, and consider
+    ///       using some sort of hybrid if most lists are small.
+    fn reprleq<'a>(&'a self,
+                   arcu: &'a CanonicalArc) -> impl Iterator<Item=&'a CanonicalArc> + 'a {
+        // We reverse the order in which we iterate, since CanonicalArc has reversed le from the
+        // OCaml implementation.
+        arcu.le.iter().rev().filter_map(move |v| {
+            const ERR : &'static str =
+                "reprleq: le and lt references from entries in the map should be in the map.";
+            let arcv = v.repr(self).expect(ERR).0;
+            if arcu as *const _ == arcv as *const _ { None } else { Some(arcv) }
+        })
+    }
+
+    /// between : Level.t -> canonical_arc -> canonical_arc list
+    /// between u v = { w | u<=w<=v, w canonical }
+    /// between is the most costly operation
+    /// (Observe that we must have compare u v = LE before calling this)
+    ///
+    /// NOTE: In the Rust version, there are some algorithmic differences:
+    ///
+    /// - We use an explicit stack rather than tail recursion (we may change this if it hurts
+    ///   performance too much).
+    ///
+    /// - Rather than vectors for remembering good and bad arcs, we use hash tables; as far as I
+    ///   can tell, we don't actually rely on the order in the lists anywhere, so unless these are
+    ///   in practice very small it seems likely that hashing should be a performance win here.  We
+    ///   also use FnvHashMap over Rust's default hash map, as it is much faster for small keys and
+    ///   we are not terribly worried about denial of service attacks due to hash table collisions
+    ///   (given that [1] the Coq implementation uses linked lists already, [2] we're hashing
+    ///   pointers, which are at the very least tricky to make sure always hash to the same thing,
+    ///   and [3] if you want to make the checker run slowly there are much easier ways to do it
+    ///   than by attacking the universe hash function!).
+    ///
+    /// - We coalesce the good and bad hash tables into a single hashmap, goodbad.  This allows us
+    ///   to replace two lookups with one; because hash lookup time is (effectively) O(1)
+    ///   regardless of table size, except for cache effects that are just as bad with two tables,
+    ///   this should hopefully improve performance.  The only other cost is that we have to
+    ///   iterate through the bad elements once at the end; if this turns out to be a problem, we
+    ///   can always go back to two hash sets, but it seems likely that it isn't if we're willing
+    ///   to iterate through the entire bad list so often in the OCaml implementation (and in
+    ///   general we would always hit the bad list at least as many times as there are keys looking
+    ///   up an element in the hash table, so filtering at the end is probably strictly better).
+    ///
+    /// - We compute the maximum good key during the between search, instead of doing it
+    ///   afterwards (and also compute the next-best maximum).  This allows us to iterate
+    ///   through the hash set just once afterwards, instead of twice.
+    fn between<'a>(&'a self, arcu: &'a CanonicalArc, arcv: &'a CanonicalArc,
+                  ) -> (usize, usize, &CanonicalArc, FnvHashMap<&'a CanonicalArc, bool>) {
+        // good are all w | u <= w <= v
+        // bad are all w | u <= w ~<= v
+
+        // find good and bad nodes in {w | u <= w}
+        // explore b u = (b or "u is good")
+        /* fn explore<'a>(g: &Universes,
+                       b: &mut bool, arcu: &'a CanonicalArc, stk: &mut Vec<(bool, &'a CanonicalArc, )>,
+                       good_bad: &mut FnvHashMap<&'a CanonicalArc, bool>,
+                       best_arc: &'a CanonicalArc) {
+        } */
+        // TODO: consider trying to work out a reasonable default capacity to make reallocation
+        // less likely.
+        // TODO: figure out if there's some sort of safe interface we could use that would allow
+        // reusing the backing storage of this hash table between functions (after we drain it);
+        // because it stores references with a particular lifetime, this seems tricky in general.
+        let mut good_bad = FnvHashMap::default();
+        // We don't put arcv into good_bad yet, even though it's known to be good; instead, we set
+        // it as the arc with maximal rank currently known to be good.
+        let mut stk = Vec::new();
+        let mut b_leq = false;
+        // The maximal rank currently known to be good
+        let mut max_rank = arcv.rank;
+        // The next-best maximal rank currently known to be good
+        let mut old_max_rank = 0;
+        // The arc with maximal rank currently known to be good
+        let mut best_arc = arcv;
+        {
+            // TODO: Check whether adding this branch hurts performance more than just adding it to
+            // the hash table and removing the max key at the end.
+            if best_arc as *const _ == arcu as *const _ {
+                b_leq = true // b or true
+            } else if let Some(&b_leq_) = good_bad.get(arcu) {
+                b_leq = b_leq || b_leq_ // b or b_leq
+            } else {
+                let leq = self.reprleq(arcu);
+                // is some universe >= u good?
+                stk.push((b_leq, arcu, leq));
+                b_leq = false
+            }
+        }
+        // explore(self, &mut b_leq, arcu, &mut stk, &mut good_bad, best_arc);
+        loop {
+            if let Some(arcu) = stk.last_mut().and_then( |&mut (_, _, ref mut leq)| leq.next()) {
+                // Process one entry of the top-level fold.
+                // TODO: Check whether adding this branch hurts performance more than just adding
+                // it to the hash table and removing the max key at the end.
+                if best_arc as *const _ == arcu as *const _ {
+                    b_leq = true // b or true
+                } else if let Some(&b_leq_) = good_bad.get(arcu) {
+                    b_leq = b_leq || b_leq_ // b or b_leq
+                } else {
+                    let leq = self.reprleq(arcu);
+                    // is some universe >= u good?
+                    stk.push((b_leq, arcu, leq));
+                    b_leq = false
+                }
+                // explore(self, &mut b_leq, arcu, &mut stk, &mut good_bad, best_arc);
+            } else if let Some((b, arcu, _)) = stk.pop() {
+                // We finished the top-level fold; b_leq = (false or "u is good") = "u is good"
+                // NOTE: good_bad should be disjoint partitions, so we shouldn't need to check
+                // whether good already contains a value for this key when we perform inserts,
+                // since if we repeat an insert it should always have the same value.
+                // (FIXME: Verify this).
+                // NOTE: We special case arcu.univ.is_small() to make sure that we maintain the
+                // invariant that small universes always point to a canonical instance with their
+                // own level.
+                if b_leq && (arcu.univ.is_small() || arcu.rank >= max_rank) {
+                    max_rank = arcu.rank;
+                    old_max_rank = max_rank;
+                    // Insert the old best_arc into good_bad.
+                    good_bad.insert(best_arc, true);
+                    best_arc = arcu; // b or true
+                } else {
+                    good_bad.insert(arcu, b_leq);
+                    b_leq = b_leq || b; // b or b_leq
+                }
+            } else {
+                // We are done processing
+                // Observe: since we know u ≤ v before, good_bad now contains at least two
+                // elements, u and v (they must be distinct, or else we would have had u = v).
+                // Let's generalize to "all elements other than best_arc" (rest) and best_arc.
+                // If best_arc.rank > max rank rest, then best_arc.rank > 0; otherwise, there
+                // are at least two elements with the same top rank (be it 0 or any other
+                // rank) and we need to increment it to create an unambiguous max rank.
+                // Therefore, we lose no interesting information by starting with
+                // old_max_rank = 0.
+                return (max_rank, old_max_rank, best_arc, good_bad)
+            }
+        }
+    }
+
+    /// merge : Level.t -> Level.t -> unit
+    /// we assume compare(u,v) = LE
+    /// merge u v forces u ~ v with repr u as canonical repr
+    ///
+    /// FIXME: Verify that the order of iteration here doesn't really matter.
+    ///
+    /// NOTE: Arc invariants are *not* preserved through panics.  This function is not intended to
+    /// throw exceptions, but if they are thrown, and later caught, PanicSafe should not be
+    /// enabled for structures containing Universes!
+    fn merge(&mut self, u: &Level, v: &Level) {
+        const ERR: &'static str =
+            "merge: le and lt references from entries in the map should be in the map.";
+        let (v, u_univ, u_incr_rank) = {
+            // NOTE: Would be nice to have these available from the getgo, but the lifetimes don't
+            // work very well.
+            let arcu = u.repr(self).expect(ERR).0;
+            let arcv = v.repr(self).expect(ERR).0;
+            // NOTE: Should probably assert that arc1 and arc2 are different here.
+            let (max_rank, old_max_rank, arcu, rest) = self.between(arcu, arcv);
+            let u_rank = max_rank == old_max_rank; // true if redirected node also has max rank
+            (rest.into_iter().filter_map(|(arcv, b)| if b { Some(&arcv.univ) } else { None } )
+                 .cloned().collect::<Vec<_>>(), arcu.univ.clone(), u_rank)
+        };
+        // TODO: use expected size to influence size of hash sets somehow.
+        let mut w = FnvHashSet::default();
+        // TODO: Figure out why w' is a list but w is a set (under OCaml semantics; in OCaml unionq
+        // is used on w but @ on w').
+        let mut w_ = Vec::new();
+        // NOTE: We do this slightly out of order compared to the OCaml--in it, the rank is
+        // incremented first--but it doesn't affect enter_equiv_arc's behavior, and this way is
+        // exception safe re: the rank increment (though it may not preserve other invariants!).
+        for v_univ in v {
+            // Safe because all levels are distinct, and all v entries start as canonical entries
+            // int the map.
+            let CanonicalArc { lt, le, .. } = self.enter_equiv_arc(&v_univ, u_univ.clone());
+            w.extend(lt);
+            // NOTE: w_ is backwards from how it is in OCaml!
+            w_.extend(le);
+        }
+        if u_incr_rank {
+            // NOTE: the addition is safe because rank is of type usize, and we have an
+            // invariant: max rank (between u v) ≤
+            //            max rank (canonical_values self) + len (canonical_values self)
+            //            ≤ len self
+            //            <= usize::MAX.
+            //
+            // The first and last inequalities are trivial.  It is not much harder to see that if
+            // the invariant is true initially, adding a new canonical value preserves it
+            // (we never change a non-canonical value to a canonical one, except during a revert,
+            // and adding a canonical entry definitionally increases len self by 1, so the number
+            // of canonical entries and len self go up by in lockstep).
+            //
+            // To see why the second is true, first observe that we never take entries out of
+            // self without reverting all changes (so elements are only added or merged;
+            // changes are effectively monotonic).  As a result, we just need to know that
+            // every increase in rank is associated with an equal or greater decrease in the
+            // number of canonical elements (any reversion actions also preserve the
+            // inequality, of course, since they just revert to previously valid state).
+            //
+            // This holds because we never call merge unless arcu and
+            // arcv have distinct canonical elements (compare u v = LE), and after a merge
+            // max rank (canonical_values self) has increased by at most 1, while the number of
+            // canonical elements has decreased by at least 1 thanks to enter_equiv_arc; the
+            // number of entries in self remains the same throughout the merge, so if the
+            // invariant was true before merge it remains true after merge.
+            //
+            // (There is one other places that modifies ranks, and it also preserves this
+            // invariant).
+            //
+            // Finally, note that even if there is a panic here calling enter_arc, or was one
+            // during any of the enter_equiv_arc calls, the invariant is still maintained, because
+            // if enter_equiv_arc succeeds it decreases the number of canonical arcs by 1, and if
+            // it fails it does not change self (it may result in other inconsistencies in the map,
+            // though!)
+            self.enter_arc(&u_univ).rank += 1;
+        }
+
+        let u_is_set = u_univ.is_set(); // Does not change throughout the loop
+        for v in w {
+            // FIXME: It would be really nice to have arcu around without having to keep rereading
+            // it... but it seems tricky to make that work (without cloning arcu, at least).
+            let (set_predicative, v_univ) = {
+                let arcu = u_univ.repr(self).expect(ERR).0;
+                let (arcv, v_can) = v.repr(self).expect(ERR);
+                if arcu.is_lt(arcv, self).expect(ERR) {
+                    continue
+                } else {
+                    (!arcv.predicative && u_is_set,
+                     if v_can { None } else { Some(arcv.univ.clone()) })
+                }
+            };
+            let v_univ = v_univ.unwrap_or(v); // TODO: Fix when NLL works.
+            if set_predicative {
+                // We only need to bother setting the arcv if (1) arcu was a set, and (2) arcv wasn't
+                // already predicative.
+                self.enter_arc(&v_univ).predicative = true
+            }
+            // Note that le is reversed from the OCaml implementation!
+            self.enter_arc(&u_univ).lt.push(v_univ);
+        }
+        for v in w_ {
+            // FIXME: It would be really nice to have arcu around without having to keep rereading
+            // it... but it seems tricky to make that work (without cloning arcu, at least).
+            let (set_predicative, v_univ) = {
+                let arcu = u_univ.repr(self).expect(ERR).0;
+                let (arcv, v_can) = v.repr(self).expect(ERR);
+                if arcu.is_leq(arcv, self).expect(ERR) {
+                    continue
+                } else {
+                    (!arcv.predicative && u_is_set,
+                     if v_can { None } else { Some(arcv.univ.clone()) })
+                }
+            };
+            let v_univ = v_univ.unwrap_or(v); // TODO: Fix when NLL works.
+            if set_predicative {
+                // We only need to bother setting the arcv if (1) arcu was a set, and (2) arcv wasn't
+                // already predicative.
+                self.enter_arc(&v_univ).predicative = true
+            }
+            // Note that le is reversed from the OCaml implementation!
+            self.enter_arc(&u_univ).le.push(v_univ);
+        }
+    }
+
+    /// merge_disc : Level.t -> Level.t -> unit
+    /// we assume  compare(u,v) = compare(v,u) = NLE
+    /// merge_disc u v  forces u ~ v with repr u as canonical repr
+    ///
+    /// NOTE: PRECONDITION: Neither u nor v is small.
+    ///
+    /// FIXME: Verify that the order of iteration here doesn't really matter.
+    ///
+    /// NOTE: Arc invariants are *not* preserved through panics.  This function is not intended to
+    /// throw exceptions, but if they are thrown, and later caught, PanicSafe should not be
+    /// enabled for structures containing Universes!
+    fn merge_disc(&mut self, u: &Level, v: &Level) {
+        const ERR: &'static str =
+            "merge_disc: le and lt references from entries in the map should be in the map.";
+        let (u_univ, v_univ, u_incr_rank) = {
+            // NOTE: Would be nice to have these available from the getgo, but the lifetimes don't
+            // work very well.
+            let (arc1, u_can) = u.repr(self).expect(ERR);
+            let (arc2, v_can) = v.repr(self).expect(ERR);
+            // NOTE: Should probably assert that arc1 and arc2 are different here.
+            // NOTE: We don't need to check for is_small here like we do for regular merge, because
+            //       our precondition is that neither u nor v is small.
+            match arc1.rank.cmp(&arc2.rank) {
+                Ordering::Less =>
+                    (if v_can { Cow::Borrowed(v) } else { Cow::Owned(arc2.univ.clone()) },
+                     if u_can { Cow::Borrowed(u) } else { Cow::Owned(arc1.univ.clone()) }, false),
+                Ordering::Equal =>
+                    (if u_can { Cow::Borrowed(u) } else { Cow::Owned(arc1.univ.clone()) },
+                     if v_can { Cow::Borrowed(v) } else { Cow::Owned(arc2.univ.clone()) }, true),
+                Ordering::Greater =>
+                    (if u_can { Cow::Borrowed(u) } else { Cow::Owned(arc1.univ.clone()) },
+                     if v_can { Cow::Borrowed(v) } else { Cow::Owned(arc2.univ.clone()) }, false),
+            }
+        };
+        // NOTE: We do this slightly out of order compared to the OCaml--in it, the rank is
+        // incremented first--but it doesn't affect enter_equiv_arc's behavior, and this way is
+        // exception safe re: the rank increment (though it may not preserve other invariants!).
+        let CanonicalArc { lt, le, .. } = self.enter_equiv_arc(&v_univ, (*u_univ).clone());
+        if u_incr_rank {
+            // NOTE: This is safe because of the invariant mentioned in merge, and it works the
+            // exact same way--we have a precondition that compare u v = NLE, so we
+            // know they were not the same beforehand; hence, we always decrement the number of
+            // canonical arcs by 1, then increment the rank of one of the remaining two by
+            // at most 1 (if we enter this branch).  The same exception safety concerns also apply.
+            self.enter_arc(&u_univ).rank += 1;
+        }
+        for v in lt {
+            // FIXME: It would be really nice to have arcu around without having to keep rereading
+            // it... but it seems tricky to make that work (without cloning arcu, at least).
+            let v_univ = {
+                let arcu = u_univ.repr(self).expect(ERR).0;
+                let (arcv, v_can) = v.repr(self).expect(ERR);
+                if arcu.is_lt(arcv, self).expect(ERR) {
+                    continue
+                } else if v_can { None } else { Some(arcv.univ.clone()) }
+            };
+            let v_univ = v_univ.unwrap_or(v); // TODO: Fix when NLL works.
+            // We don't need to set predicativity for v, because u is definitely not Set.
+            // Note that le is reversed from the OCaml implementation!
+            self.enter_arc(&u_univ).lt.push(v_univ);
+        }
+        for v in le {
+            // FIXME: It would be really nice to have arcu around without having to keep rereading
+            // it... but it seems tricky to make that work (without cloning arcu, at least).
+            let v_univ = {
+                let arcu = u_univ.repr(self).expect(ERR).0;
+                let (arcv, v_can) = v.repr(self).expect(ERR);
+                if arcu.is_leq(arcv, self).expect(ERR) {
+                    continue
+                } else if v_can { None } else { Some(arcv.univ.clone()) }
+            };
+            let v_univ = v_univ.unwrap_or(v); // TODO: Fix when NLL works.
+            // We don't need to set predicativity for v, because u is definitely not Set.
+            // Note that le is reversed from the OCaml implementation!
+            self.enter_arc(&u_univ).le.push(v_univ);
+        }
+    }
+
+    /// enforce_univ_eq : Level.t -> Level.t -> unit
+    /// enforce_univ_eq u v will force u=v if possible, will fail otherwise
+    fn enforce_eq(&mut self, u: &Level, v: &Level) -> UnivConstraintResult<()> {
+        let (do_neq, u_univ, v_univ) = {
+            let g = &*self;
+            let (arcu, u_canon) = u.repr(g)?;
+            let (arcv, v_canon) = v.repr(g)?;
+            const ERR : &'static str =
+                "enforce_eq: le and lt references from entries in the map should be in the map.";
+            match arcu.fast_compare(arcv, g).expect(ERR) {
+                FastOrder::Eq => return Ok(()),
+                FastOrder::Lt =>
+                    return Err(ConstraintType::Eq.error_inconsistency(u.clone(), v.clone())),
+                FastOrder::Le =>
+                    (false,
+                     if u_canon { Cow::Borrowed(u) } else { Cow::Owned(arcu.univ.clone()) },
+                     if v_canon { Cow::Borrowed(v) } else { Cow::Owned(arcv.univ.clone()) }),
+                FastOrder::NLe => match arcv.fast_compare_neq(arcu, false, g).expect(ERR) {
+                    FastOrder::Lt =>
+                        return Err(ConstraintType::Eq.error_inconsistency(u.clone(), v.clone())),
+                    FastOrder::Le =>
+                        (false,
+                         if v_canon { Cow::Borrowed(v) } else { Cow::Owned(arcv.univ.clone()) },
+                         if u_canon { Cow::Borrowed(u) } else { Cow::Owned(arcu.univ.clone()) }),
+                    FastOrder::NLe =>
+                        (true,
+                         if u_canon { Cow::Borrowed(u) } else { Cow::Owned(arcu.univ.clone()) },
+                         if v_canon { Cow::Borrowed(v) } else { Cow::Owned(arcv.univ.clone()) }),
+                    FastOrder::Eq =>
+                        return Err(Box::new(UnivConstraintError::Anomaly("Univ.compare".into()))),
+                },
+            }
+        };
+        // Since u_univ and v_univ are both values in the table, and both canonical, their univs
+        // are the same as their keys in the table, so we know the lookups below won't panic.
+        // We must be careful to set things in the correct order (arcv is updated before arcu).
+        if do_neq {
+            // merge_disc
+            // NOTE: We know compare u v is not Eq, Le, or Lt, and compare v u is not Eq, Le, or
+            // Lt, so we can conclude that neither u nor v are small (since add_universes ensures
+            // that Set ≤ every added level except Prop, and Prop < Set so Prop < every added
+            // level except Prop and Set).  This satisies the precondition for merge_disc and
+            // ensures that Set and Prop remain their own canonical entries.
+            self.merge_disc(&u_univ, &v_univ);
+        } else {
+            // merge
+            self.merge(&u_univ, &v_univ);
+        }
+        Ok(())
+    }
+
+    /// enforce_univ_leq : Level.t -> Level.t -> unit
+    /// enforce_univ_leq u v will force u<=v if possible, will fail otherwise
+    fn enforce_leq(&mut self, u: &Level, v: &Level) -> UnivConstraintResult<()> {
+        let (do_leq, u_univ, v_univ) = {
+            let g = &*self;
+            let (arcu, u_canon) = u.repr(g)?;
+            let (arcv, v_canon) = v.repr(g)?;
+            const ERR : &'static str =
+                "enforce_leq: le and lt references from entries in the map should be in the map.";
+            if arcu.is_leq(arcv, g).expect(ERR) { return Ok(()) }
+            match arcv.fast_compare(arcu, g).expect(ERR) {
+                FastOrder::Lt =>
+                    return Err(ConstraintType::Le.error_inconsistency(u.clone(), v.clone())),
+                FastOrder::Le =>
+                    (None,
+                     if u_canon { Cow::Borrowed(u) } else { Cow::Owned(arcu.univ.clone()) },
+                     if v_canon { Cow::Borrowed(v) } else { Cow::Owned(arcv.univ.clone()) }),
+                FastOrder::NLe =>
+                    (Some(!arcv.predicative && arcu.is_set()),
+                     if u_canon { Cow::Borrowed(u) } else { Cow::Owned(arcu.univ.clone()) },
+                     Cow::Owned(arcv.univ.clone())),
+                FastOrder::Eq =>
+                    return Err(Box::new(UnivConstraintError::Anomaly("Univ.compare".into()))),
+            }
+        };
+        // Since u_univ and v_univ are both values in the table, and both canonical, their univs
+        // are the same as their keys in the table, so we know the lookups below won't panic.
+        // We must be careful to set things in the correct order (arcv is updated before arcu).
+        Ok(if let Some(set_predicative) = do_leq {
+            // setleq
+            if set_predicative {
+                // We only need to bother setting the arcv if (1) arcu was a set, and (2) arcv
+                // wasn't already predicative.
+                self.enter_arc(&v_univ).predicative = true
+            }
+            // Note that le is reversed from the OCaml implementation!
+            self.enter_arc(&u_univ).le.push(v_univ.into_owned());
+        } else {
+            // merge
+            self.merge(&v_univ, &u_univ);
+        })
+    }
+
+    /// enforce_univ_lt u v will force u<v if possible, will fail otherwise
+    fn enforce_lt(&mut self, u: &Level, v: &Level) -> UnivConstraintResult<()> {
+        let (set_predicative, u_univ, v_univ) = {
+            let g = &*self;
+            let (arcu, u_canon) = u.repr(g)?;
+            let arcv = v.repr(g)?.0;
+            const ERR : &'static str =
+                "enforce_lt: le and lt references from entries in the map should be in the map.";
+            match arcu.fast_compare(arcv, g).expect(ERR) {
+                FastOrder::Lt => return Ok(()),
+                FastOrder::Le =>
+                    (!arcv.predicative && arcu.is_set(),
+                     if u_canon { Cow::Borrowed(u) } else { Cow::Owned(arcu.univ.clone()) },
+                     arcv.univ.clone()),
+                FastOrder::Eq =>
+                    return Err(ConstraintType::Lt.error_inconsistency(u.clone(), v.clone())),
+                FastOrder::NLe => match arcv.fast_compare_neq(arcu, false, g).expect(ERR) {
+                    FastOrder::NLe =>
+                        (!arcv.predicative && arcu.is_set(),
+                         if u_canon { Cow::Borrowed(u) } else { Cow::Owned(arcu.univ.clone()) },
+                         arcv.univ.clone()),
+                    FastOrder::Eq =>
+                        return Err(Box::new(UnivConstraintError::Anomaly("Univ.compare".into()))),
+                    FastOrder::Le | FastOrder::Lt =>
+                        return Err(ConstraintType::Lt.error_inconsistency(u.clone(), v.clone())),
+                },
+            }
+        };
+        // Since u_univ and v_univ are both values in the table, and both canonical, their univs
+        // are the same as their keys in the table, so we know the lookups below won't panic.
+        // We must be careful to set things in the correct order (arcv is updated before arcu).
+        if set_predicative {
+            // We only need to bother setting the arcv if (1) arcu was a set, and (2) arcv wasn't
+            // already predicative.
+            self.enter_arc(&v_univ).predicative = true
+        }
+        // Note that lt is reversed from the OCaml implementation!
+        self.enter_arc(&u_univ).lt.push(v_univ);
+        Ok(())
+    }
+
+    /// Constraints and sets of constraints
+    fn enforce_constraint(&mut self,
+                          &UnivConstraint(ref u, d, ref v): &UnivConstraint
+                         ) -> UnivConstraintResult<()> {
+        match d {
+            ConstraintType::Lt => self.enforce_lt(u, v),
+            ConstraintType::Le => self.enforce_leq(u, v),
+            ConstraintType::Eq => self.enforce_eq(u, v),
+        }
+    }
+
+    /// NOTE: Any partial modifications are not currently rolled back on error.
+    pub fn merge_constraints<'a, I>(&mut self, c: I) -> UnivConstraintResult<()>
+        where I: Iterator<Item=&'a UnivConstraint>,
+    {
+        for c in c {
+            self.enforce_constraint(c)?;
+        }
+        Ok(())
+    }
+
+    /// Constraint functions
+
+    fn check_constraint(&self, &UnivConstraint(ref l, d, ref r): &UnivConstraint
+                       ) -> UnivResult<bool> {
+        match d {
+            ConstraintType::Eq => l.check_equal(r, self),
+            ConstraintType::Le => l.check_smaller(r, false, self),
+            ConstraintType::Lt => l.check_smaller(r, true, self),
+        }
+    }
+
+    pub fn check_constraints<'a, I>(&self, c: I) -> UnivResult<bool>
+        where
+            I: Iterator<Item=&'a UnivConstraint>,
+    {
+        for c in c {
+            if !self.check_constraint(c)? { return Ok(false) }
+        }
+        Ok(true)
+    }
+
+    pub fn merge_context(&mut self, strict: bool, c: &Context) -> UnivConstraintResult<()> {
+        for v in c.0.iter() {
+            // Be lenient, module typing reintroduces universes and
+            // constraints due to includes
+            // NOTE: Purposefully ignoring error as a result of the above.
+            // TODO: Figure out whether there's any way to avoid this...
+            let _ = self.add_universe(v.clone(), strict);
+        }
+        self.merge_constraints(c.1.iter())
+    }
+}
+
+/// For use in Constraint.
+/// TODO: Consider replacing this with a UnivConstraintKey wrapper, once it's been ascertained that
+/// this won't cause problems.
+impl PartialEq for UnivConstraint {
+    fn eq(&self, &UnivConstraint(ref u_, c_, ref v_): &Self) -> bool {
+        // Inlined version of UConstraintOrd.compare where we only care whether comparison is 0.
+        let UnivConstraint(ref u, c, ref v) = *self;
+        // constraint_type_ord == 0 is the same as structural equality for ConstraintType.
+        c == c_ &&
+        // Level.compare == 0 is the same as Level.equal.
+        u.equal(u_) && v.equal(v_)
+    }
+}
+
+/// For use in Constraint.
+/// TODO: Consider replacing this with a UnivConstraintKey wrapper, once it's been ascertained that
+/// this won't cause problems.
+impl Eq for UnivConstraint {}
 
 impl Instance {
     pub fn empty() -> Self {
@@ -926,33 +1659,6 @@ impl Instance {
     }
 }
 
-/* impl Context {
-    pub fn make(ctx: Instance, cst: Cstrs) -> Self {
-        Context(ctx, cst)
-    }
-} */
-
-impl Universes {
-    fn check_constraint(&self, &UnivConstraint(ref l, d, ref r): &UnivConstraint
-                       ) -> UnivResult<bool> {
-        match d {
-            ConstraintType::Eq => l.check_equal(r, self),
-            ConstraintType::Le => l.check_smaller(r, false, self),
-            ConstraintType::Lt => l.check_smaller(r, true, self),
-        }
-    }
-
-    pub fn check_constraints<'a, I>(&self, c: I) -> UnivResult<bool>
-        where
-            I: Iterator<Item=&'a UnivConstraint>,
-    {
-        for c in c {
-            if !self.check_constraint(c)? { return Ok(false) }
-        }
-        Ok(true)
-    }
-}
-
 impl UnivConstraint {
     fn subst_instance(&self, s: &Instance) -> SubstResult<Self> {
         let UnivConstraint(ref u, d, ref v) = *self;
@@ -963,25 +1669,6 @@ impl UnivConstraint {
         Ok(UnivConstraint(u_, d, v_))
     }
 }
-
-/// For use in Constraint.
-/// TODO: Consider replacing this with a UnivConstraintKey wrapper, once it's been ascertained that
-/// this won't cause problems.
-impl PartialEq for UnivConstraint {
-    fn eq(&self, &UnivConstraint(ref u_, c_, ref v_): &Self) -> bool {
-        // Inlined version of UConstraintOrd.compare where we only care whether comparison is 0.
-        let UnivConstraint(ref u, c, ref v) = *self;
-        // constraint_type_ord == 0 is the same as structural equality for ConstraintType.
-        c == c_ &&
-        // Level.compare == 0 is the same as Level.equal.
-        u.equal(u_) && v.equal(v_)
-    }
-}
-
-/// For use in Constraint.
-/// TODO: Consider replacing this with a UnivConstraintKey wrapper, once it's been ascertained that
-/// this won't cause problems.
-impl Eq for UnivConstraint {}
 
 impl Cstrs {
     pub fn subst_instance(&self, s: &Instance) -> SubstResult<HashSet<UnivConstraint>> {
