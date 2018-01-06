@@ -2,6 +2,7 @@ use coq::checker::univ::{
     Huniv,
     SubstError,
     SubstResult,
+    UndoLog,
     UnivConstraintResult,
     Universes,
 };
@@ -246,16 +247,18 @@ impl<'g> Stratification<'g> {
         &self.enga
     }
 
-    pub fn add_constraints<'a, I>(&mut self, c: I) -> UnivConstraintResult<()>
+    pub fn add_constraints<'a, I>(&mut self, c: I,
+                                  log: &mut UndoLog<'g>) -> UnivConstraintResult<()>
         where
             I: Iterator<Item=&'a UnivConstraint>,
     {
-        self.universes.merge_constraints(c)
+        self.universes.merge_constraints(c, log)
     }
 
-    pub fn push_context(&mut self, strict: bool, ctx: &'g Context) -> UnivConstraintResult<()>
+    pub fn push_context(&mut self, strict: bool, ctx: &'g Context,
+                        log: &mut UndoLog<'g>) -> UnivConstraintResult<()>
     {
-        self.universes.merge_context(strict, ctx)
+        self.universes.merge_context(strict, ctx, log)
     }
 }
 

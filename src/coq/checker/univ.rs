@@ -68,7 +68,6 @@ enum UnivEntry<'g> {
   Equiv(&'g Level),
 }
 
-
 /// INVARIANT:
 ///   max rank (canonical_values self) + len (canonical_values self) ≤ len self
 /// INVARIANT:
@@ -78,6 +77,22 @@ enum UnivEntry<'g> {
 ///     (3) Set < Prop;
 ///     (4) ∀ x s.t. x is not small, Prop ≤ x;
 pub struct Universes<'g>(UMap<'g, UnivEntry<'g>>);
+
+enum UnivOpKind<'g, EquivState> {
+    IncRank,
+    SetPredicative,
+    Equiv(EquivState),
+    PushLt(&'g Level),
+    PushLe(&'g Level),
+    Terminal,
+}
+
+struct UnivOp<'g, EquivState> {
+    key: &'g Level,
+    op: UnivOpKind<'g, EquivState>,
+}
+
+pub struct UndoLog<'g>(Vec<UnivOp<'g, CanonicalArc<'g>>>);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum UnivError {
@@ -1011,54 +1026,58 @@ impl<'g> Universes<'g> {
     /// Additionally, v should be a valid entry in the map.
     ///
     /// (it could return an error, but panicking seems correct everywhere this is used).
-    fn enter_equiv_arc(&mut self, u: &Level, v: &'g Level) -> CanonicalArc<'g> {
-        // NOTE: We don't care about any value that was already in the map.
-        let can = self.0.get_mut(u).expect("enter_equiv_arc: level was not in the map");
-        if let UnivEntry::Canonical(ca) = mem::replace(can, UnivEntry::Equiv(v)) {
-            ca
-        } else {
-            panic!("enter_equiv_arc: level was not canonical")
-        }
+    fn enter_equiv_arc(&mut self, u: &'g Level, v: &'g Level, log: &mut UndoLog<'g>) {
+        self.write_arc(u, UnivOpKind::Equiv(v), log).unwrap();
     }
 
-    /// Panics if either ca_univ does not exist in the map, or the arc to which it directly
-    /// points is not canonical!
-    ///
-    /// (it could return an error, but panicking seems correct everywhere this is used).
-    fn enter_arc<'a>(&'a mut self, ca_univ: &Level) -> &'a mut CanonicalArc<'g> {
-        let can = self.0.get_mut(ca_univ).expect("enter_arc: level was not in the map");
-        if let UnivEntry::Canonical(ref mut ca) = *can {
-            ca
-        } else {
-            panic!("enter_arc: level was not canonical")
-        }
+    /// Result is Ok if the operation could be performed successfully, Err if not.
+    /// Panics if the prerequisites for the operation are not met (in particular, for every
+    /// operation except Terminal, the hash map must be occupied at that level and the level must
+    /// be canonical).
+    fn write_arc<'a>(&'a mut self, ca_univ: &'g Level, op: UnivOpKind<'g, &'g Level>,
+                     log: &mut UndoLog<'g>) -> Result<(), ()> {
+        Ok(log.0.push(UnivOp { key: ca_univ, op: match (self.0.entry(ca_univ), op) {
+            (hash_map::Entry::Vacant(v), UnivOpKind::Terminal) => {
+                v.insert(UnivEntry::Canonical(CanonicalArc::terminal(ca_univ)));
+                UnivOpKind::Terminal
+            },
+            (hash_map::Entry::Vacant(_), _) => panic!("write_arc: level was not in the map"),
+            (hash_map::Entry::Occupied(o), op) => match (o.into_mut(), op) {
+                (_, UnivOpKind::Terminal) => { return Err(()) },
+                (entry, UnivOpKind::Equiv(new)) => {
+                    if let UnivEntry::Canonical(old) = mem::replace(entry, UnivEntry::Equiv(new)) {
+                        UnivOpKind::Equiv(old)
+                    } else { panic!("write_arc: level was not canonical") }
+                },
+                (&mut UnivEntry::Equiv(_), _) => panic!("write_arc: level was not canonical"),
+                (&mut UnivEntry::Canonical(ref mut ca), UnivOpKind::IncRank) =>
+                    { ca.rank += 1; UnivOpKind::IncRank },
+                (&mut UnivEntry::Canonical(ref mut ca), UnivOpKind::SetPredicative) =>
+                    { ca.predicative = true; UnivOpKind::SetPredicative },
+                (&mut UnivEntry::Canonical(ref mut ca), UnivOpKind::PushLt(level)) =>
+                    { ca.lt.push(level); UnivOpKind::PushLt(level) },
+                (&mut UnivEntry::Canonical(ref mut ca), UnivOpKind::PushLe(level)) =>
+                    { ca.le.push(level); UnivOpKind::PushLe(level) },
+            }
+        } }))
     }
 
     /// Panics if self is not properly initialized (which should never happen) or if somehow Set
     /// has become non-canonical (which should also never happen).
-    fn get_set_arc(&mut self) -> &mut CanonicalArc<'g> {
-        let can = self.0.get_mut(&Level::SET).expect("get_set_arc: level was not in the map");
-        if let UnivEntry::Canonical(ref mut ca) = *can {
-            ca
-        } else {
-            panic!("get_set_arc: Level.set was not canonical")
-        }
+    fn write_set_arc(&mut self, op: UnivOpKind<'g, &'g Level>,
+                     log: &mut UndoLog<'g>) -> Result<(), ()> {
+        self.write_arc(&Level::SET, op, log)
     }
 
     /// NOTE: In the unlikely event that this method panics, invariants are *not* guaranteed to be
     /// maintained.  Do not mark structures containing Universes PanicSafe!
     ///
     /// Returns `Ok(())` if add_universe succeeded, and `Err(())` if the entry already exists.
-    pub fn add_universe(&mut self, vlev: &'g Level, strict: bool) -> Result<(), ()> {
-        {
-            let arcv = if let hash_map::Entry::Vacant(arcv) = self.0.entry(vlev) {
-                arcv
-            } else { return Err(()) };
-            let v = CanonicalArc::terminal(vlev);
-            arcv.insert(UnivEntry::Canonical(v));
-        }
-        let arc = self.get_set_arc();
-        Ok(if strict { arc.lt.push(vlev) } else { arc.le.push(vlev) })
+    pub fn add_universe(&mut self, vlev: &'g Level, strict: bool,
+                        log: &mut UndoLog<'g>) -> Result<(), ()> {
+        self.write_arc(vlev, UnivOpKind::Terminal, log)?;
+        self.write_set_arc(if strict { UnivOpKind::PushLt(vlev) }
+                           else { UnivOpKind::PushLe(vlev) }, log)
     }
 
     /// reprleq : canonical_arc -> canonical_arc list
@@ -1223,7 +1242,7 @@ impl<'g> Universes<'g> {
     /// NOTE: Arc invariants are *not* preserved through panics.  This function is not intended to
     /// throw exceptions, but if they are thrown, and later caught, PanicSafe should not be
     /// enabled for structures containing Universes!
-    fn merge(&mut self, u: &Level, v: &Level) {
+    fn merge(&mut self, u: &Level, v: &Level, log: &mut UndoLog<'g>) {
         const ERR: &'static str =
             "merge: le and lt references from entries in the map should be in the map.";
         let (v, u_univ, u_incr_rank) = {
@@ -1248,10 +1267,17 @@ impl<'g> Universes<'g> {
         for v_univ in v {
             // Safe because all levels are distinct, and all v entries start as canonical entries
             // int the map.
-            let CanonicalArc { lt, le, .. } = self.enter_equiv_arc(v_univ, u_univ);
-            w.extend(lt);
+            self.enter_equiv_arc(v_univ, u_univ, log);
+            // Last log entry now contains the old entry.
+            let entry =
+                if let Some(&UnivOp { op: UnivOpKind::Equiv(ref entry), .. }) = log.0.last() {
+                    entry
+                } else {
+                    panic!("enter_equiv_arc always succeeds with the same OpKind or panics")
+                };
+            w.extend(entry.lt.iter().map( |&v| v));
             // NOTE: w_ is backwards from how it is in OCaml!
-            w_.extend(le);
+            w_.extend(entry.le.iter().map( |&v| v));
         }
         if u_incr_rank {
             // NOTE: the addition is safe because rank is of type usize, and we have an
@@ -1288,7 +1314,7 @@ impl<'g> Universes<'g> {
             // if enter_equiv_arc succeeds it decreases the number of canonical arcs by 1, and if
             // it fails it does not change self (it may result in other inconsistencies in the map,
             // though!)
-            self.enter_arc(u_univ).rank += 1;
+            self.write_arc(u_univ, UnivOpKind::IncRank, log).unwrap();
         }
 
         let u_is_set = u_univ.is_set(); // Does not change throughout the loop
@@ -1304,10 +1330,10 @@ impl<'g> Universes<'g> {
             if set_predicative {
                 // We only need to bother setting the arcv if (1) arcu was a set, and (2) arcv wasn't
                 // already predicative.
-                self.enter_arc(v_univ).predicative = true
+                self.write_arc(v_univ, UnivOpKind::SetPredicative, log).unwrap();
             }
-            // Note that le is reversed from the OCaml implementation!
-            self.enter_arc(u_univ).lt.push(v_univ);
+            // Note that lt is reversed from the OCaml implementation!
+            self.write_arc(u_univ, UnivOpKind::PushLt(v_univ), log).unwrap();
         }
         for v in w_ {
             // FIXME: It would be really nice to have arcu around without having to keep rereading
@@ -1321,10 +1347,10 @@ impl<'g> Universes<'g> {
             if set_predicative {
                 // We only need to bother setting the arcv if (1) arcu was a set, and (2) arcv wasn't
                 // already predicative.
-                self.enter_arc(v_univ).predicative = true
+                self.write_arc(v_univ, UnivOpKind::SetPredicative, log).unwrap();
             }
             // Note that le is reversed from the OCaml implementation!
-            self.enter_arc(u_univ).le.push(v_univ);
+            self.write_arc(u_univ, UnivOpKind::PushLe(v_univ), log).unwrap();
         }
     }
 
@@ -1339,7 +1365,7 @@ impl<'g> Universes<'g> {
     /// NOTE: Arc invariants are *not* preserved through panics.  This function is not intended to
     /// throw exceptions, but if they are thrown, and later caught, PanicSafe should not be
     /// enabled for structures containing Universes!
-    fn merge_disc(&mut self, u: &Level, v: &Level) {
+    fn merge_disc(&mut self, u: &Level, v: &Level, log: &mut UndoLog<'g>) {
         const ERR: &'static str =
             "merge_disc: le and lt references from entries in the map should be in the map.";
         let (u_univ, v_univ, u_incr_rank) = {
@@ -1356,47 +1382,63 @@ impl<'g> Universes<'g> {
                 Ordering::Greater => (arc1.univ, arc2.univ, false),
             }
         };
-        // NOTE: We do this slightly out of order compared to the OCaml--in it, the rank is
-        // incremented first--but it doesn't affect enter_equiv_arc's behavior, and this way is
-        // exception safe re: the rank increment (though it may not preserve other invariants!).
-        let CanonicalArc { lt, le, .. } = self.enter_equiv_arc(v_univ, u_univ);
-        if u_incr_rank {
-            // NOTE: This is safe because of the invariant mentioned in merge, and it works the
-            // exact same way--we have a precondition that compare u v = NLE, so we
-            // know they were not the same beforehand; hence, we always decrement the number of
-            // canonical arcs by 1, then increment the rank of one of the remaining two by
-            // at most 1 (if we enter this branch).  The same exception safety concerns also apply.
-            self.enter_arc(u_univ).rank += 1;
-        }
-        for v in lt {
-            // FIXME: It would be really nice to have arcu around without having to keep rereading
-            // it... but it seems tricky to make that work (without cloning arcu, at least).
-            let v_univ = {
-                let arcu = u_univ.repr(self).expect(ERR);
-                let arcv = v.repr(self).expect(ERR);
-                if arcu.is_lt(arcv, self).expect(ERR) { continue } else { arcv.univ }
-            };
-            // We don't need to set predicativity for v, because u is definitely not Set.
-            // Note that le is reversed from the OCaml implementation!
-            self.enter_arc(u_univ).lt.push(v_univ);
-        }
-        for v in le {
-            // FIXME: It would be really nice to have arcu around without having to keep rereading
-            // it... but it seems tricky to make that work (without cloning arcu, at least).
-            let v_univ = {
-                let arcu = u_univ.repr(self).expect(ERR);
-                let arcv = v.repr(self).expect(ERR);
-                if arcu.is_leq(arcv, self).expect(ERR) { continue } else { arcv.univ }
-            };
-            // We don't need to set predicativity for v, because u is definitely not Set.
-            // Note that le is reversed from the OCaml implementation!
-            self.enter_arc(u_univ).le.push(v_univ);
-        }
+        let UndoLog(temp_log) = {
+            // NOTE: We do this slightly out of order compared to the OCaml--in it, the rank is
+            // incremented first--but it doesn't affect enter_equiv_arc's behavior, and this way is
+            // exception safe re: the rank increment (though it may not preserve other invariants!).
+            self.enter_equiv_arc(v_univ, u_univ, log);
+            let entry =
+                if let Some(&UnivOp { op: UnivOpKind::Equiv(ref entry), .. }) = log.0.last() {
+                    entry
+                } else {
+                    panic!("enter_equiv_arc always succeeds with the same OpKind or panics")
+                };
+            let CanonicalArc { ref lt, ref le, .. } = *entry;
+            let mut temp_log = UndoLog::new();
+            if u_incr_rank {
+                // NOTE: This is safe because of the invariant mentioned in merge, and it works the
+                // exact same way--we have a precondition that compare u v = NLE, so we
+                // know they were not the same beforehand; hence, we always decrement the number of
+                // canonical arcs by 1, then increment the rank of one of the remaining two by
+                // at most 1 (if we enter this branch).  The same exception safety concerns also
+                // apply.
+                self.write_arc(u_univ, UnivOpKind::IncRank, &mut temp_log).unwrap();
+            }
+            for &v in lt {
+                // FIXME: It would be really nice to have arcu around without having to keep
+                // rereading it... but it seems tricky to make that work (without cloning arcu, at
+                // least).
+                let v_univ = {
+                    let arcu = u_univ.repr(self).expect(ERR);
+                    let arcv = v.repr(self).expect(ERR);
+                    if arcu.is_lt(arcv, self).expect(ERR) { continue } else { arcv.univ }
+                };
+                // We don't need to set predicativity for v, because u is definitely not Set.
+                // Note that lt is reversed from the OCaml implementation!
+                self.write_arc(u_univ, UnivOpKind::PushLt(v_univ), &mut temp_log).unwrap();
+            }
+            for &v in le {
+                // FIXME: It would be really nice to have arcu around without having to keep
+                // rereading it... but it seems tricky to make that work (without cloning arcu, at
+                // least).
+                let v_univ = {
+                    let arcu = u_univ.repr(self).expect(ERR);
+                    let arcv = v.repr(self).expect(ERR);
+                    if arcu.is_leq(arcv, self).expect(ERR) { continue } else { arcv.univ }
+                };
+                // We don't need to set predicativity for v, because u is definitely not Set.
+                // Note that le is reversed from the OCaml implementation!
+                self.write_arc(u_univ, UnivOpKind::PushLe(v_univ), &mut temp_log).unwrap();
+            }
+            temp_log
+        };
+        log.0.extend(temp_log);
     }
 
     /// enforce_univ_eq : Level.t -> Level.t -> unit
     /// enforce_univ_eq u v will force u=v if possible, will fail otherwise
-    fn enforce_eq(&mut self, u: &Level, v: &Level) -> UnivConstraintResult<()> {
+    fn enforce_eq(&mut self, u: &Level, v: &Level,
+                  log: &mut UndoLog<'g>) -> UnivConstraintResult<()> {
         let (do_neq, u_univ, v_univ) = {
             let g = &*self;
             let arcu = u.repr(g)?;
@@ -1428,17 +1470,18 @@ impl<'g> Universes<'g> {
             // that Set ≤ every added level except Prop, and Prop < Set so Prop < every added
             // level except Prop and Set).  This satisies the precondition for merge_disc and
             // ensures that Set and Prop remain their own canonical entries.
-            self.merge_disc(u_univ, v_univ);
+            self.merge_disc(u_univ, v_univ, log);
         } else {
             // merge
-            self.merge(u_univ, v_univ);
+            self.merge(u_univ, v_univ, log);
         }
         Ok(())
     }
 
     /// enforce_univ_leq : Level.t -> Level.t -> unit
     /// enforce_univ_leq u v will force u<=v if possible, will fail otherwise
-    fn enforce_leq(&mut self, u: &Level, v: &Level) -> UnivConstraintResult<()> {
+    fn enforce_leq(&mut self, u: &Level, v: &Level,
+                   log: &mut UndoLog<'g>) -> UnivConstraintResult<()> {
         let (do_leq, u_univ, v_univ) = {
             let g = &*self;
             let arcu = u.repr(g)?;
@@ -1463,18 +1506,19 @@ impl<'g> Universes<'g> {
             if set_predicative {
                 // We only need to bother setting the arcv if (1) arcu was a set, and (2) arcv
                 // wasn't already predicative.
-                self.enter_arc(v_univ).predicative = true
+                self.write_arc(v_univ, UnivOpKind::SetPredicative, log).unwrap();
             }
             // Note that le is reversed from the OCaml implementation!
-            self.enter_arc(u_univ).le.push(v_univ);
+            self.write_arc(u_univ, UnivOpKind::PushLe(v_univ), log).unwrap();
         } else {
             // merge
-            self.merge(v_univ, u_univ);
+            self.merge(v_univ, u_univ, log);
         })
     }
 
     /// enforce_univ_lt u v will force u<v if possible, will fail otherwise
-    fn enforce_lt(&mut self, u: &Level, v: &Level) -> UnivConstraintResult<()> {
+    fn enforce_lt(&mut self, u: &Level, v: &Level,
+                  log: &mut UndoLog<'g>) -> UnivConstraintResult<()> {
         let (set_predicative, u_univ, v_univ) = {
             let g = &*self;
             let arcu = u.repr(g)?;
@@ -1501,30 +1545,31 @@ impl<'g> Universes<'g> {
         if set_predicative {
             // We only need to bother setting the arcv if (1) arcu was a set, and (2) arcv wasn't
             // already predicative.
-            self.enter_arc(v_univ).predicative = true
+            self.write_arc(v_univ, UnivOpKind::SetPredicative, log).unwrap();
         }
         // Note that lt is reversed from the OCaml implementation!
-        self.enter_arc(u_univ).lt.push(v_univ);
+        self.write_arc(u_univ, UnivOpKind::PushLt(v_univ), log).unwrap();
         Ok(())
     }
 
     /// Constraints and sets of constraints
     fn enforce_constraint(&mut self,
-                          &UnivConstraint(ref u, d, ref v): &UnivConstraint
-                         ) -> UnivConstraintResult<()> {
+                          &UnivConstraint(ref u, d, ref v): &UnivConstraint,
+                          log: &mut UndoLog<'g>) -> UnivConstraintResult<()> {
         match d {
-            ConstraintType::Lt => self.enforce_lt(u, v),
-            ConstraintType::Le => self.enforce_leq(u, v),
-            ConstraintType::Eq => self.enforce_eq(u, v),
+            ConstraintType::Lt => self.enforce_lt(u, v, log),
+            ConstraintType::Le => self.enforce_leq(u, v, log),
+            ConstraintType::Eq => self.enforce_eq(u, v, log),
         }
     }
 
     /// NOTE: Any partial modifications are not currently rolled back on error.
-    pub fn merge_constraints<'a, I>(&mut self, c: I) -> UnivConstraintResult<()>
+    pub fn merge_constraints<'a, I>(&mut self, c: I,
+                                    log: &mut UndoLog<'g>) -> UnivConstraintResult<()>
         where I: Iterator<Item=&'a UnivConstraint>,
     {
         for c in c {
-            self.enforce_constraint(c)?;
+            self.enforce_constraint(c, log)?;
         }
         Ok(())
     }
@@ -1550,15 +1595,64 @@ impl<'g> Universes<'g> {
         Ok(true)
     }
 
-    pub fn merge_context(&mut self, strict: bool, c: &'g Context) -> UnivConstraintResult<()> {
+    pub fn merge_context(&mut self, strict: bool, c: &'g Context,
+                         log: &mut UndoLog<'g>) -> UnivConstraintResult<()> {
         for v in c.0.iter() {
             // Be lenient, module typing reintroduces universes and
             // constraints due to includes
             // NOTE: Purposefully ignoring error as a result of the above.
             // TODO: Figure out whether there's any way to avoid this...
-            let _ = self.add_universe(v, strict);
+            let _ = self.add_universe(v, strict, log);
         }
-        self.merge_constraints(c.1.iter())
+        self.merge_constraints(c.1.iter(), log)
+    }
+}
+
+impl<'g> UnivOp<'g, CanonicalArc<'g>> {
+    fn undo(self, g: &mut Universes<'g>) {
+        let UnivOp { key, op } = self;
+        if let hash_map::Entry::Occupied(o) = g.0.entry(key) {
+            match op {
+                UnivOpKind::Terminal => { o.remove(); },
+                UnivOpKind::Equiv(old) => {
+                    mem::replace(o.into_mut(), UnivEntry::Canonical(old));
+                },
+                _ => if let UnivEntry::Canonical(ref mut ca) = *o.into_mut() {
+                    match op {
+                        UnivOpKind::IncRank => { ca.rank -= 1; },
+                        UnivOpKind::SetPredicative => { ca.predicative = false; },
+                        UnivOpKind::PushLt(_) => { ca.lt.pop(); },
+                        UnivOpKind::PushLe(_) => { ca.le.pop(); },
+                        _ => unreachable!("undo: already handled all operations")
+                    }
+                } else { panic!("undo: level was not canonical") }
+            }
+        } else { panic!("undo: level was not in the map") }
+    }
+}
+
+impl<'g> UndoLog<'g> {
+    pub fn new() -> Self {
+        UndoLog(Vec::new())
+    }
+
+    /// Precondition: in order to roll back safely, this must be the latest undo log associated
+    /// with the provided Universes that has not already been rolled back, and the undo log must be
+    /// used for a contiguous interval (i.e., one should not interleave use of one rollback log
+    /// with another).
+    ///
+    /// Postcondition: The universes context is rolled back to its state just before the undo log
+    /// was created.
+    ///
+    /// NOTE: This is not exception safe.  Do not include UndoLog in anything PanicSafe!
+    ///
+    /// TODO: Enforce at least some of the above invariants at the type level, and possibly
+    /// auto-roll-abck in a destructor (?).
+    pub fn rollback(self, g: &mut Universes<'g>) {
+        let UndoLog(mut log) = self;
+        while let Some(op) = log.pop() {
+            op.undo(g);
+        }
     }
 }
 

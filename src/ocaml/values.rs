@@ -497,19 +497,23 @@ pub struct Cb {
 
 #[derive(Debug, Clone, DeserializeState)]
 #[serde(deserialize_state = "Seed<'de>")]
+#[serde(bound(deserialize = "T: serde::de::DeserializeState<'de, Seed<'de>> +
+                                Send + Sync + 'static"))]
+pub enum RTree<T> {
+    Rec(Int, #[serde(deserialize_state)] Array<RTree<T>>),
+    Node(#[serde(deserialize_state)] T, #[serde(deserialize_state)] Array<RTree<T>>),
+    Param(Int, Int),
+}
+
+#[derive(Debug, Clone, DeserializeState)]
+#[serde(deserialize_state = "Seed<'de>")]
 pub enum RecArg {
     Norec,
     Imbr(#[serde(deserialize_state)] ORef<Ind>),
     Mrec(#[serde(deserialize_state)] ORef<Ind>),
 }
 
-#[derive(Debug, Clone, DeserializeState)]
-#[serde(deserialize_state = "Seed<'de>")]
-pub enum Wfp {
-    Rec(Int, #[serde(deserialize_state)] Array<Wfp>),
-    Node(#[serde(deserialize_state)] RecArg, #[serde(deserialize_state)] Array<Wfp>),
-    Param(Int, Int),
-}
+pub type Wfp = RTree<RecArg>;
 
 #[derive(Debug, Clone, DeserializeState)]
 #[serde(deserialize_state = "Seed<'de>")]
