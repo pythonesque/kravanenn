@@ -24,7 +24,6 @@ use coq::checker::type_errors::{
 };
 use coq::checker::univ::{
     Huniv,
-    LMap,
     SubstError,
     SubstResult,
     UnivError,
@@ -68,7 +67,7 @@ use ocaml::values::{
     Univ,
 };
 use std::borrow::{Borrow, Cow};
-use std::collections::hash_map;
+use std::collections::hash_map::{self, HashMap};
 use std::iter::{self};
 use std::sync::{Arc};
 
@@ -522,7 +521,7 @@ impl Sort {
 /// cons_subst adds the mapping [u |-> su] in subst if [u] is not
 /// in the domain or adds [u |-> sup x su] if [u] is already mapped
 /// to [x].
-fn cons_subst(u: Level, su: Univ, subst: &mut LMap<Univ>, tbl: &Huniv) -> IdxResult<()> {
+fn cons_subst(u: Level, su: Univ, subst: &mut HashMap<Level, Univ>, tbl: &Huniv) -> IdxResult<()> {
     match subst.entry(u) {
         hash_map::Entry::Occupied(o) => o.into_mut().sup(&su, tbl),
         hash_map::Entry::Vacant(v) => { v.insert(su); Ok(()) },
@@ -531,7 +530,7 @@ fn cons_subst(u: Level, su: Univ, subst: &mut LMap<Univ>, tbl: &Huniv) -> IdxRes
 
 /// remember_subst updates the mapping [u |-> x] by [u |-> sup x u]
 /// if it is presents and leaves the substitution unchanged if not.
-fn remember_subst(u: Level, subst: &mut LMap<Univ>, tbl: &Huniv) -> IdxResult<()> {
+fn remember_subst(u: Level, subst: &mut HashMap<Level, Univ>, tbl: &Huniv) -> IdxResult<()> {
     // FIXME: We create this even if we don't need it.
     let su = Univ::make(u.clone(), tbl)?;
     if let hash_map::Entry::Occupied(o) = subst.entry(u) {
@@ -547,12 +546,12 @@ impl<'b, 'g> Env<'b, 'g> {
     ///
     /// NOTE: All args must be typechecked beforehand!
     fn make_subst<'a1, 'a2, I1, I2>(&self, ctx: I1, mut exp: &List<Opt<Level>>,
-                                    mut args: I2) -> SpecialRedResult<LMap<Univ>>
+                                    mut args: I2) -> SpecialRedResult<HashMap<Level, Univ>>
         where
             I1: Iterator<Item=&'a1 RDecl>,
             I2: Iterator<Item=&'a2 Constr>,
     {
-        let mut subst = LMap::new();
+        let mut subst = HashMap::new();
         for d in ctx {
             if let RDecl::LocalDef(_, _, _) = *d { continue }
             // FIXME: Figure out why it's okay to just eat arguments if there are no

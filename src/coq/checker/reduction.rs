@@ -469,7 +469,7 @@ impl Constr {
 
 /// Conversion utility functions
 
-impl Universes {
+impl<'g> Universes<'g> {
     fn convert(&self, u: &Instance, u_: &Instance) -> ConvResult<()> {
         if u.check_eq(u_, self)? { Ok(()) }
         else { Err(Box::new(ConvError::NotConvertible)) }

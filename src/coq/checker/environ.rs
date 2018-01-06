@@ -59,8 +59,8 @@ pub struct Globals<'g> {
     // modtypes: MpMap<ModType>,
 }
 
-pub struct Stratification {
-    universes: Universes,
+pub struct Stratification<'g> {
+    universes: Universes<'g>,
     enga: Engagement,
 }
 
@@ -76,7 +76,7 @@ pub struct Env<'b, 'g> where 'g: 'b {
     /// to deal with.  We can always change it later.  Just keep in mind that the head of the
     /// list is the last element of the vector.
     pub rel_context: &'b mut Vec<RDecl>,
-    pub stratification: Stratification,
+    pub stratification: Stratification<'g>,
     // imports: MpMap<VoDigest>,
 }
 
@@ -237,8 +237,8 @@ impl<'g> Globals<'g> where {
     }
 }
 
-impl Stratification {
-    pub fn universes(&self) -> &Universes {
+impl<'g> Stratification<'g> {
+    pub fn universes(&self) -> &Universes<'g> {
         &self.universes
     }
 
@@ -253,7 +253,7 @@ impl Stratification {
         self.universes.merge_constraints(c)
     }
 
-    pub fn push_context(&mut self, strict: bool, ctx: &Context) -> UnivConstraintResult<()>
+    pub fn push_context(&mut self, strict: bool, ctx: &'g Context) -> UnivConstraintResult<()>
     {
         self.universes.merge_context(strict, ctx)
     }
