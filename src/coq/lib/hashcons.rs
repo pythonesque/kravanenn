@@ -10,7 +10,7 @@ use ocaml::values::{
 };
 use std::sync::{Arc};
 
-pub use self::make::{Table};
+pub use self::make::{KeyHasher, Table};
 
 /// Hashconsing functorial interface
 
@@ -62,7 +62,7 @@ mod make {
     /// not useful.
     /// TODO: Investigate changing this (but keep in mind that if we choose a different hash
     /// function from the one used by Coq, loading things from .vo files will likely get a lot more
-    /// complicated, since we won't be able to assume that their hashes are meaninful).
+    /// complicated, since we won't be able to assume that their hashes are meaningful).
     /// FIXME: Hey, wait, why can we assume their hashes are meaningful in the checker, anyway?
     /// Couldn't they be any integer an attacker chose?  This might be an exploitable soundness bug
     /// (but hopefully the worst it can lead to is false negatives).

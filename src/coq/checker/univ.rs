@@ -2,7 +2,7 @@ use coq::kernel::esubst::{
     IdxError,
     IdxResult,
 };
-use coq::lib::hashcons::{HashconsedType, Hlist, Hstring, Table};
+use coq::lib::hashcons::{HashconsedType, Hlist, Hstring, KeyHasher, Table};
 use coq::lib::hashset::combine;
 use core::convert::TryFrom;
 use fnv::{FnvHashSet, FnvHashMap};
@@ -26,6 +26,7 @@ use ocaml::values::{
 use std::cmp::{Ord, Ordering};
 use std::collections::{HashSet, HashMap};
 use std::collections::hash_map::{self};
+use std::hash::{BuildHasherDefault};
 use std::mem::{self};
 use std::option::{NoneError};
 use std::sync::{Arc};
@@ -103,7 +104,8 @@ pub enum UnivConstraintError {
 /// Support for universe polymorphism
 
 /// Polymorphic maps from universe levels to 'a
-pub type LMap<'g, T> = HashMap<&'g Level, T>;
+pub type LMap<'g, T> = HashMap<&'g Level, T, BuildHasherDefault<KeyHasher>>;
+pub type LSet<'g> = HashSet<&'g Level, BuildHasherDefault<KeyHasher>>;
 
 pub type UMap<'g, T> = LMap<'g, T>;
 
@@ -1236,7 +1238,7 @@ impl<'g> Universes<'g> {
                  .collect::<Vec<_>>(), arcu.univ, u_rank)
         };
         // TODO: use expected size to influence size of hash sets somehow.
-        let mut w = FnvHashSet::default();
+        let mut w = LSet::default();
         // TODO: Figure out why w' is a list but w is a set (under OCaml semantics; in OCaml unionq
         // is used on w but @ on w').
         let mut w_ = Vec::new();
