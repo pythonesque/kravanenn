@@ -32,9 +32,11 @@ use std::option::{NoneError};
 use std::sync::{Arc};
 
 /// Comparison on this type is pointer equality
+///
 /// TODO: If we do want to use Vecs here, consider using a RingBuf, so we have one contiguous
 /// allocation instead of two, pushing onto the front for le and the back for lt, and using an
 /// index to see where the split happens; this should use less space, and may be faster overall.
+///
 /// TODO: Consider using a variant of Level (LevelRef<'g>?) that uses a &'g Dp and is otherwise
 /// a value, so we don't have as many Level indirections.
 struct CanonicalArc<'g> {
@@ -68,31 +70,75 @@ enum UnivEntry<'g> {
   Equiv(&'g Level),
 }
 
-/// INVARIANT:
-///   max rank (canonical_values self) + len (canonical_values self) ≤ len self
-/// INVARIANT:
-///   Set and Prop:
-///     (1) always have entries in the table;
-///     (2) have canonical instances whose level is also Set / Prop, respectively;
-///     (3) Set < Prop;
-///     (4) ∀ x s.t. x is not small, Prop ≤ x;
+/// ## Invariants
+///
+/// 1.  max rank (canonical_values self) + len (canonical_values self) ≤ len self
+///
+/// 2.  Set and Prop:
+///     1.  always have entries in the table;
+///     2.  have canonical instances whose level is also Set / Prop, respectively;
+///     3.  Set < Prop;
+///     4.  ∀ x s.t. x is not small, Prop ≤ x;
+///
+/// 3.  Invariants on the results of compare (defined below):
+///
+///     1. compare(u,v) = EQ <=> compare(v,u) = EQ
+///     2. compare(u,v) = LT or LE => compare(v,u) = NLE
+///     3. compare(u,v) = NLE => compare(v,u) = NLE or LE or LT
+///
+/// 4. Derived invariants (consistency of writes):
+///
+///     1. Adding u<=v is consistent iff compare(v,u) # LT
+///         and then it is redundant iff compare(u,v) # NLE
+///     2. Adding u<v is consistent iff compare(v,u) = NLE
+///        and then it is redundant iff compare(u,v) = LT
 pub struct Universes<'g>(UMap<'g, UnivEntry<'g>>);
 
+/// A datatype representing information needed to either perform a legal write to `Universes`
+/// or undo a previously performed write.  `EquivState` is used to allow different information to
+/// be provided when writing an `Equiv` operation (which needs to know the new level to which it
+/// points) vs. undoing one (which needs to know the full `CanonicalArc` that used to live at that
+/// level).
+///
+/// There are additional invariants on the writes (see the Universes definition and also the
+/// documentation for `write_arc`).  For all the operations below, we state the "forward" version
+/// of the operation (the backwards version reverses it).
 enum UnivOpKind<'g, EquivState> {
+    /// On write, represents an increment of the rank of this entry by 1
     IncRank,
+    /// On write, represents changing predicative for this entry from false to true.
     SetPredicative,
+    /// On write, represents changing this entry from a Canonical value to an Equiv link.
     Equiv(EquivState),
+    /// On write, represents pushing the provided level onto the lt stack for this entry.
     PushLt(&'g Level),
+    /// On write, represents pushing the provided level onto the le stack for this entry.
     PushLe(&'g Level),
+    /// On write, represents adding this entry to the universes map.
     Terminal,
 }
 
-struct UnivOp<'g, EquivState> {
+/// Represents an undo operation, consisting of an op (with EquivState = `CanonicalArc`, since it
+/// is an undo operation) and a key (representing the level in the Universes mapto which this
+/// operation was applied).
+struct UnivOp<'g> {
     key: &'g Level,
-    op: UnivOpKind<'g, EquivState>,
+    op: UnivOpKind<'g, CanonicalArc<'g>>,
 }
 
-pub struct UndoLog<'g>(Vec<UnivOp<'g, CanonicalArc<'g>>>);
+/// TODO: Consider storing creation operations separately (maybe as a HashSet); if an entry was
+/// created in this UndoLog, there's no reason to store any other information about operations
+/// that write to that entry, since when the UndoLog is rolled back the entry will be deleted.
+///
+/// TODO: Also consider storing Equiv operations differently, since an Equiv operation contains
+/// a full CanonicalArc--which is as much information as is needed to store the entire initial
+/// state of the entry.  Perhaps an Equiv operation can replace all other operations on an entry,
+/// if added?
+///
+/// TODO: Consider whether it would be possible or desirable to apply rollbacks "lazily" (on an
+/// as-needed basis) instead of always doing them the moment the undo log was rolled back?  This
+/// would require significantly more thought.
+pub struct UndoLog<'g>(Vec<UnivOp<'g>>);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum UnivError {
@@ -647,15 +693,6 @@ impl Level {
         }
     }
 
-    /// Invariants : compare(u,v) = EQ <=> compare(v,u) = EQ
-    ///              compare(u,v) = LT or LE => compare(v,u) = NLE
-    ///              compare(u,v) = NLE => compare(v,u) = NLE or LE or LT
-    ///
-    /// Adding u>=v is consistent iff compare(v,u) # LT
-    ///  and then it is redundant iff compare(u,v) # NLE
-    /// Adding u>v is consistent iff compare(v,u) = NLE
-    ///  and then it is redundant iff compare(u,v) = LT
-
     /// Universe checks [check_eq] and [check_leq], used in coqchk
 
     /// First, checks on universe levels
@@ -1030,10 +1067,27 @@ impl<'g> Universes<'g> {
         self.write_arc(u, UnivOpKind::Equiv(v), log).unwrap();
     }
 
-    /// Result is Ok if the operation could be performed successfully, Err if not.
+    /// Performs a logged write operation on the Universes structure.
+    ///
+    /// Result is Ok if the operation could be performed successfully, Err if not.  A successful
+    /// operation always results in a UnivOp whose op is of the same variant as op being added to
+    /// the top (back) of the undo stack.
+    ///
     /// Panics if the prerequisites for the operation are not met (in particular, for every
     /// operation except Terminal, the hash map must be occupied at that level and the level must
     /// be canonical).
+    ///
+    /// NOTE: The caller is responsible for checking to make sure that:
+    ///
+    /// - Predicative is set from false to true at most once.
+    ///
+    /// - The max rank invariant is respected (if IncRank is called, it must be preceded by one or
+    ///   more Canonical → Equiv operations).
+    ///
+    /// - The usual invariants on lt and le on the data structure are respected (in particular, all
+    ///   the levels they reference must be keys in the map, the partial order formed by the
+    ///   transitive closure of the arrows in lt and le must not have cycles, and the compare
+    ///   operations must return results consistent with the comparison invariants).
     fn write_arc<'a>(&'a mut self, ca_univ: &'g Level, op: UnivOpKind<'g, &'g Level>,
                      log: &mut UndoLog<'g>) -> Result<(), ()> {
         Ok(log.0.push(UnivOp { key: ca_univ, op: match (self.0.entry(ca_univ), op) {
@@ -1045,18 +1099,25 @@ impl<'g> Universes<'g> {
             (hash_map::Entry::Occupied(o), op) => match (o.into_mut(), op) {
                 (_, UnivOpKind::Terminal) => { return Err(()) },
                 (entry, UnivOpKind::Equiv(new)) => {
+                    // Once a Canonical Arc changes to an Equiv arc, it never changes back!
                     if let UnivEntry::Canonical(old) = mem::replace(entry, UnivEntry::Equiv(new)) {
                         UnivOpKind::Equiv(old)
                     } else { panic!("write_arc: level was not canonical") }
                 },
                 (&mut UnivEntry::Equiv(_), _) => panic!("write_arc: level was not canonical"),
                 (&mut UnivEntry::Canonical(ref mut ca), UnivOpKind::IncRank) =>
+                    // This should always be safe as long as the max rank invariant is respected!
                     { ca.rank += 1; UnivOpKind::IncRank },
                 (&mut UnivEntry::Canonical(ref mut ca), UnivOpKind::SetPredicative) =>
+                    // Predicative must have been false just before this call.
                     { ca.predicative = true; UnivOpKind::SetPredicative },
                 (&mut UnivEntry::Canonical(ref mut ca), UnivOpKind::PushLt(level)) =>
+                    // level must not already be in the lt set, and must be a legal entry in the
+                    // map.
                     { ca.lt.push(level); UnivOpKind::PushLt(level) },
                 (&mut UnivEntry::Canonical(ref mut ca), UnivOpKind::PushLe(level)) =>
+                    // level must not already be in the lt set, and must be a legal entry in the
+                    // map.
                     { ca.le.push(level); UnivOpKind::PushLe(level) },
             }
         } }))
@@ -1076,8 +1137,13 @@ impl<'g> Universes<'g> {
     pub fn add_universe(&mut self, vlev: &'g Level, strict: bool,
                         log: &mut UndoLog<'g>) -> Result<(), ()> {
         self.write_arc(vlev, UnivOpKind::Terminal, log)?;
-        self.write_set_arc(if strict { UnivOpKind::PushLt(vlev) }
-                           else { UnivOpKind::PushLe(vlev) }, log)
+        // PushLt and PushLe should always succeed; they are always sound for new levels because
+        // the write_arc above fails if vlev is already in the map (so vlev could not have already
+        // been in the lt or le list for any entry in the map), and we know Set and Prop are
+        // already in the map (so vlev must not be small).  Therefore, we want Prop ≤ x, and both
+        // of the below are consistent with Prop ≤ x.
+        Ok(self.write_set_arc(if strict { UnivOpKind::PushLt(vlev) }
+                              else { UnivOpKind::PushLe(vlev) }, log).unwrap())
     }
 
     /// reprleq : canonical_arc -> canonical_arc list
@@ -1608,7 +1674,7 @@ impl<'g> Universes<'g> {
     }
 }
 
-impl<'g> UnivOp<'g, CanonicalArc<'g>> {
+impl<'g> UnivOp<'g> {
     fn undo(self, g: &mut Universes<'g>) {
         let UnivOp { key, op } = self;
         if let hash_map::Entry::Occupied(o) = g.0.entry(key) {
@@ -1647,10 +1713,10 @@ impl<'g> UndoLog<'g> {
     /// NOTE: This is not exception safe.  Do not include UndoLog in anything PanicSafe!
     ///
     /// TODO: Enforce at least some of the above invariants at the type level, and possibly
-    /// auto-roll-abck in a destructor (?).
+    /// auto-roll-back in a destructor (?).
     pub fn rollback(self, g: &mut Universes<'g>) {
-        let UndoLog(mut log) = self;
-        while let Some(op) = log.pop() {
+        let UndoLog(log) = self;
+        for op in log.into_iter().rev() {
             op.undo(g);
         }
     }
