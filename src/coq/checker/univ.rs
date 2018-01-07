@@ -140,6 +140,13 @@ struct UnivOp<'g> {
 /// would require significantly more thought.
 pub struct UndoLog<'g>(Vec<UnivOp<'g>>);
 
+/// NOTE: we auto-derive Hash to make it easy to work with sets of constraints, since we use a
+/// HashSet (unlike the OCaml implementation, which uses a CSet).
+#[derive(Debug, Clone, Copy, Hash)]
+pub struct UConstraint<'g>(pub &'g Level, pub ConstraintType, pub &'g Level);
+
+pub struct UContext<'g>(&'g Instance, HashSet<UConstraint<'g>>);
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum UnivError {
     Anomaly(String),
@@ -723,7 +730,7 @@ impl Level {
     }
 
     /// Substitute instance inst for ctx in csts
-    fn subst_instance(&self, s: &Instance) -> SubstResult<Level> {
+    fn subst_instance<'a>(&'a self, s: &'a Instance) -> SubstResult<&'a Level> {
         Ok(match self.data {
             RawLevel::Var(n) => {
                 // TODO: Check whether this get is handled at typechecking time?
@@ -732,7 +739,7 @@ impl Level {
                 s.get(n).ok_or(SubstError::NotFound)?
             },
             _ => self,
-        }.clone())
+        })
     }
 }
 
@@ -1002,7 +1009,7 @@ impl Univ {
     }
 
     pub fn subst_instance(&self, s: &Instance, tbl: &Huniv) -> SubstResult<Univ> {
-        let u_ = self.smart_map( |x| x.map( |u| u.subst_instance(s), &()), tbl)?;
+        let u_ = self.smart_map( |x| x.map( |u| u.subst_instance(s).map(Clone::clone), &()), tbl)?;
         if self.hequal(&u_) { Ok(u_) }
         else { Ok(u_.sort(tbl)?) }
     }
@@ -1620,7 +1627,7 @@ impl<'g> Universes<'g> {
 
     /// Constraints and sets of constraints
     fn enforce_constraint(&mut self,
-                          &UnivConstraint(ref u, d, ref v): &UnivConstraint,
+                          &UConstraint(u, d, v): &UConstraint,
                           log: &mut UndoLog<'g>) -> UnivConstraintResult<()> {
         match d {
             ConstraintType::Lt => self.enforce_lt(u, v, log),
@@ -1632,7 +1639,8 @@ impl<'g> Universes<'g> {
     /// NOTE: Any partial modifications are not currently rolled back on error.
     pub fn merge_constraints<'a, I>(&mut self, c: I,
                                     log: &mut UndoLog<'g>) -> UnivConstraintResult<()>
-        where I: Iterator<Item=&'a UnivConstraint>,
+        where
+            I: Iterator<Item=&'a UConstraint<'a>>,
     {
         for c in c {
             self.enforce_constraint(c, log)?;
@@ -1642,8 +1650,7 @@ impl<'g> Universes<'g> {
 
     /// Constraint functions
 
-    fn check_constraint(&self, &UnivConstraint(ref l, d, ref r): &UnivConstraint
-                       ) -> UnivResult<bool> {
+    fn check_constraint(&self, &UConstraint(l, d, r): &UConstraint) -> UnivResult<bool> {
         match d {
             ConstraintType::Eq => l.check_equal(r, self),
             ConstraintType::Le => l.check_smaller(r, false, self),
@@ -1653,7 +1660,7 @@ impl<'g> Universes<'g> {
 
     pub fn check_constraints<'a, I>(&self, c: I) -> UnivResult<bool>
         where
-            I: Iterator<Item=&'a UnivConstraint>,
+            I: Iterator<Item=&'a UConstraint<'a>>,
     {
         for c in c {
             if !self.check_constraint(c)? { return Ok(false) }
@@ -1661,7 +1668,7 @@ impl<'g> Universes<'g> {
         Ok(true)
     }
 
-    pub fn merge_context(&mut self, strict: bool, c: &'g Context,
+    pub fn merge_context(&mut self, strict: bool, c: &UContext<'g>,
                          log: &mut UndoLog<'g>) -> UnivConstraintResult<()> {
         for v in c.0.iter() {
             // Be lenient, module typing reintroduces universes and
@@ -1722,13 +1729,11 @@ impl<'g> UndoLog<'g> {
     }
 }
 
-/// For use in Constraint.
-/// TODO: Consider replacing this with a UnivConstraintKey wrapper, once it's been ascertained that
-/// this won't cause problems.
-impl PartialEq for UnivConstraint {
-    fn eq(&self, &UnivConstraint(ref u_, c_, ref v_): &Self) -> bool {
+/// For use in HashSet.
+impl<'g> PartialEq for UConstraint<'g> {
+    fn eq(&self, &UConstraint(u_, c_, v_): &Self) -> bool {
         // Inlined version of UConstraintOrd.compare where we only care whether comparison is 0.
-        let UnivConstraint(ref u, c, ref v) = *self;
+        let UConstraint(u, c, v) = *self;
         // constraint_type_ord == 0 is the same as structural equality for ConstraintType.
         c == c_ &&
         // Level.compare == 0 is the same as Level.equal.
@@ -1736,10 +1741,8 @@ impl PartialEq for UnivConstraint {
     }
 }
 
-/// For use in Constraint.
-/// TODO: Consider replacing this with a UnivConstraintKey wrapper, once it's been ascertained that
-/// this won't cause problems.
-impl Eq for UnivConstraint {}
+/// For use in HashSet.
+impl<'g> Eq for UConstraint<'g> {}
 
 impl Instance {
     pub fn empty() -> Self {
@@ -1771,23 +1774,33 @@ impl Instance {
     /// Substitution functions
 
     pub fn subst_instance(&self, s: &Instance) -> SubstResult<Instance> {
-        self.smart_map( |l| l.subst_instance(s), Level::hequal)
+        self.smart_map( |l| l.subst_instance(s).map(Clone::clone), Level::hequal)
     }
 }
 
 impl UnivConstraint {
-    fn subst_instance(&self, s: &Instance) -> SubstResult<Self> {
+    fn subst_instance<'a>(&'a self, s: &'a Instance) -> SubstResult<UConstraint<'a>> {
         let UnivConstraint(ref u, d, ref v) = *self;
         let u_ = u.subst_instance(s)?;
         let v_ = v.subst_instance(s)?;
         // Ok(if u.hequal(u_) && v.hequal(v_) { Cow::Borrowed(self) }
         //    else { Cow::Owned(UnivConstraint(u_, d, v_)) })
-        Ok(UnivConstraint(u_, d, v_))
+        Ok(UConstraint(u_, d, v_))
     }
 }
 
 impl Cstrs {
-    pub fn subst_instance(&self, s: &Instance) -> SubstResult<HashSet<UnivConstraint>> {
+    pub fn subst_instance<'a>(&'a self, s: &'a Instance) -> SubstResult<HashSet<UConstraint<'a>>> {
         self.iter().map( |c| c.subst_instance(s) ).collect()
+    }
+}
+
+impl Context {
+    /// Substitute instance inst for ctx in csts
+    pub fn instantiate<'g>(&'g self) -> SubstResult<UContext<'g>> {
+        let Context(ref ctx, ref csts) = *self;
+        csts.iter().map( |c| c.subst_instance(ctx))
+            .collect::<Result<HashSet<_>, _>>()
+            .map( |csts| UContext(ctx, csts) )
     }
 }

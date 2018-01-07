@@ -24,6 +24,9 @@ use coq::checker::type_errors::{
     error_unbound_rel,
     error_unsatisfied_constraints,
 };
+use coq::checker::univ::{
+    UConstraint,
+};
 use coq::kernel::esubst::{
     Idx,
     IdxError,
@@ -96,10 +99,14 @@ impl<'b, 'g> Env<'b, 'g> {
     }
 
     fn check_constraints<'e>(&'e mut self,
-                             cst: HashSet<UnivConstraint>) -> CaseResult<'e, 'b, 'g, &'e mut Self>
+                             cst: HashSet<UConstraint>) -> CaseResult<'e, 'b, 'g, &'e mut Self>
     {
         if self.stratification.universes().check_constraints(cst.iter())? { Ok(self) }
-        else { Err(Box::new(CaseError::Type(error_unsatisfied_constraints(self, cst)))) }
+        else {
+            let cst = cst.into_iter()
+                         .map( |UConstraint(l, k, r)| UnivConstraint(l.clone(), k, r.clone()));
+            Err(Box::new(CaseError::Type(error_unsatisfied_constraints(self, cst.collect()))))
+        }
     }
 
     /// This should be a type (a priori without intension to be an assumption).
@@ -227,10 +234,11 @@ impl<'b, 'g> Env<'b, 'g> {
     ///
     ///       ∃ (ty : constr) (s : sort) (cu : context), self ⊨ consistent cu →
     ///                                                  self ⊢ Const [u]δ : ty ∧ self ⊢ ty : s
-    fn type_of_constant_knowing_parameters<'a, I>(&self, cst: &PUniverses<Cst>,
+    fn type_of_constant_knowing_parameters<'a, I>(&self, cst: &'a PUniverses<Cst>,
                                                   paramtyps: I) ->
-            Option<IndEvaluationResult<(Cow<'g, Constr>, HashSet<UnivConstraint>)>>
+            Option<IndEvaluationResult<(Cow<'g, Constr>, HashSet<UConstraint<'a>>)>>
         where
+            'g: 'a,
             I: Iterator<Item=&'a Constr>,
     {
         self.globals.constant_type(cst)
@@ -282,10 +290,11 @@ impl<'b, 'g> Env<'b, 'g> {
     /// NOTE: Postcondition (ignoring template arity):
     ///
     ///       ∃ (ty : constr) (s : sort), self ⊢ Const [u]δ : ty ∧ self ⊢ ty : s
-    fn judge_of_constant_knowing_parameters<'a, 'e, I>(&'e mut self, cst: &PUniverses<Cst>,
+    fn judge_of_constant_knowing_parameters<'a, 'e, I>(&'e mut self, cst: &'a PUniverses<Cst>,
                                                        paramstyp: I) ->
             CaseResult<'e, 'b, 'g, (&'e mut Self, Cow<'g, Constr>)>
         where
+            'g: 'a,
             I: Iterator<Item=&'a Constr>,
     {
         // NOTE: In the OCaml implementation, first we try to look up the constant, to make sure it

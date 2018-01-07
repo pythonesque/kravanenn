@@ -213,9 +213,7 @@ pub enum ConstraintType {
     Eq,
 }
 
-/// NOTE: we auto-derive Hash to make it easy to work with sets of constraints, since we use a
-/// HashSet (unlike the OCaml implementation, which uses a CSet).
-#[derive(Debug, Clone, DeserializeState, Hash)]
+#[derive(Debug, Clone, DeserializeState)]
 #[serde(deserialize_state = "Seed<'de>")]
 pub struct UnivConstraint(
     #[serde(deserialize_state)] pub Level,

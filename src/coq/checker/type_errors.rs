@@ -15,7 +15,6 @@ use ocaml::values::{
     SortFam,
     UnivConstraint,
 };
-use std::collections::{HashSet};
 
 pub type UnsafeJudgment = (Constr, Constr);
 
@@ -77,7 +76,7 @@ pub enum TypeErrorKind {
     CantApplyNonFunctional(UnsafeJudgment, Vec<UnsafeJudgment>),
     IllFormedRecBody(GuardError, Vec<Name>, Int),
     IllTypedRecBody(usize, Vec<Name>, Vec<UnsafeJudgment>, Vec<Constr>),
-    UnsatisfiedConstraints(HashSet<UnivConstraint>),
+    UnsatisfiedConstraints(Vec<UnivConstraint>),
 }
 
 #[derive(Debug)]
@@ -153,7 +152,7 @@ pub fn error_ill_typed_rec_body<'e, 'b, 'g>(env: &'e mut Env<'b, 'g>, i: usize, 
 }
 
 pub fn error_unsatisfied_constraints<'e, 'b, 'g>(env: &'e mut Env<'b, 'g>,
-                                                 c: HashSet<UnivConstraint>,
+                                                 c: Vec<UnivConstraint>,
                                                 ) -> Box<TypeError<'e, 'b, 'g>> {
     Box::new(TypeError(env, TypeErrorKind::UnsatisfiedConstraints(c)))
 }

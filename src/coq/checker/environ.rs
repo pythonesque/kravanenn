@@ -2,6 +2,8 @@ use coq::checker::univ::{
     Huniv,
     SubstError,
     SubstResult,
+    UConstraint,
+    UContext,
     UndoLog,
     UnivConstraintResult,
     Universes,
@@ -23,7 +25,6 @@ use core::nonzero::{NonZero};
 use ocaml::values::{
     Cb,
     Constr,
-    Context,
     Cst,
     CstType,
     CstDef,
@@ -39,7 +40,6 @@ use ocaml::values::{
     PUniverses,
     // Rctxt,
     RDecl,
-    UnivConstraint,
     // VoDigest,
 };
 use std::borrow::{Borrow, Cow};
@@ -110,7 +110,7 @@ impl ::std::convert::From<SubstError> for ConstEvaluationResult {
 }
 
 impl Cb {
-    fn constraints_of(&self, u: &Instance) -> SubstResult<HashSet<UnivConstraint>> {
+    fn constraints_of<'a>(&'a self, u: &'a Instance) -> SubstResult<HashSet<UConstraint<'a>>> {
         let univs = &self.universes;
         univs.1.subst_instance(u)
     }
@@ -147,8 +147,10 @@ impl<'g> Globals<'g> where {
     ///
     /// NOTE: Panics if the looked-up constant body cb has cb.polymorphic true,
     /// but cb.ty is not a RegularArity.
-    pub fn constant_type(&self, cons: &PUniverses<Cst>
-                        ) -> Option<SubstResult<(Cow<'g, CstType>, HashSet<UnivConstraint>)>> {
+    pub fn constant_type<'a>(&self, cons: &'a PUniverses<Cst>
+                            ) -> Option<SubstResult<(Cow<'g, CstType>, HashSet<UConstraint<'a>>)>>
+        where 'g: 'a,
+    {
         let PUniverses(ref kn, ref u) = *cons;
         self.lookup_constant(kn)
             .map( |cb| {
@@ -247,15 +249,15 @@ impl<'g> Stratification<'g> {
         &self.enga
     }
 
-    pub fn add_constraints<'a, I>(&mut self, c: I,
+    /* pub fn add_constraints<'a, I>(&mut self, c: I,
                                   log: &mut UndoLog<'g>) -> UnivConstraintResult<()>
         where
-            I: Iterator<Item=&'a UnivConstraint>,
+            I: Iterator<Item=&'a UConstraint<'a>>,
     {
         self.universes.merge_constraints(c, log)
-    }
+    } */
 
-    pub fn push_context(&mut self, strict: bool, ctx: &'g Context,
+    pub fn push_context(&mut self, strict: bool, ctx: &UContext<'g>,
                         log: &mut UndoLog<'g>) -> UnivConstraintResult<()>
     {
         self.universes.merge_context(strict, ctx, log)
