@@ -499,18 +499,29 @@ pub struct Cb {
 #[serde(deserialize_state = "Seed<'de>")]
 #[serde(bound(deserialize = "T: serde::de::DeserializeState<'de, Seed<'de>> +
                                 Send + Sync + 'static"))]
+/// Type of regular trees:
+///
+/// 1.  Param denotes tree variables (like de Bruijn indices)
+///     the first int is the depth of the occurrence, and the second int
+///     is the index in the array of trees introduced at that depth.
+///
+///     Warning: Param's indices both start at 0!
+/// 2.  Node denotes the usual tree node, labelled with 'a
+/// 3.  Rec(j,v1..vn) introduces infinite tree. It denotes
+///     v(j+1) with parameters 0..n-1 replaced by
+///     Rec(0,v1..vn)..Rec(n-1,v1..vn) respectively.
 pub enum RTree<T> {
-    Rec(Int, #[serde(deserialize_state)] Array<RTree<T>>),
-    Node(#[serde(deserialize_state)] T, #[serde(deserialize_state)] Array<RTree<T>>),
+    Rec(Int, #[serde(deserialize_state)] Vec<RTree<T>>),
+    Node(#[serde(deserialize_state)] T, #[serde(deserialize_state)] Vec<RTree<T>>),
     Param(Int, Int),
 }
 
 #[derive(Debug, Clone, DeserializeState)]
 #[serde(deserialize_state = "Seed<'de>")]
 pub enum RecArg {
-    Norec,
+    NoRec,
     Imbr(#[serde(deserialize_state)] ORef<Ind>),
-    Mrec(#[serde(deserialize_state)] ORef<Ind>),
+    MRec(#[serde(deserialize_state)] ORef<Ind>),
 }
 
 pub type Wfp = RTree<RecArg>;

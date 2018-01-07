@@ -15,6 +15,7 @@ extern crate fixedbitset;
 #[macro_use] extern crate serde_state as serde;
 #[macro_use] extern crate serde_derive_state;
 
+extern crate bit_set;
 extern crate core;
 extern crate cuckoo;
 extern crate fnv;

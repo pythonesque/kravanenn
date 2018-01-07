@@ -41,3 +41,4 @@ rayon = "0.9.0"
 movecell = "0.2.0"
 cuckoo = { git = "https://github.com/pythonesque/libcuckoo.rs", branch = "wip" }
 fnv = "1.0.6"
+bit-set = "0.4.0"
