@@ -247,10 +247,10 @@ impl<'e, 'b, 'g> ::std::convert::From<SubstError> for Box<CaseError<'e, 'b, 'g>>
 impl<'e, 'b, 'g> ::std::convert::From<Box<SpecialRedError>> for Box<CaseError<'e, 'b, 'g>> {
     fn from(e: Box<SpecialRedError>) -> Self {
         Box::new(match *e {
-            SpecialRedError::Anomaly(ref s) => CaseError::Anomaly(s.clone()),
-            SpecialRedError::Idx(ref e) => CaseError::Idx(e.clone()),
-            SpecialRedError::Red(ref e) => CaseError::Red(e.clone()),
-            SpecialRedError::UserError(ref s) => CaseError::UserError(s.clone()),
+            SpecialRedError::Anomaly(s) => CaseError::Anomaly(s),
+            SpecialRedError::Idx(e) => CaseError::Idx(e),
+            SpecialRedError::Red(e) => CaseError::Red(e),
+            SpecialRedError::UserError(s) => CaseError::UserError(s),
         })
     }
 }
@@ -265,11 +265,11 @@ impl<'e, 'b, 'g> CaseError<'e, 'b, 'g> {
         where F: FnOnce() -> Box<TypeError<'e, 'b, 'g>>,
     {
         Box::new(match *e {
-            ConvError::Anomaly(ref s) => CaseError::Anomaly(s.clone()),
-            ConvError::Env(ref e) => CaseError::Env(e.clone()),
-            ConvError::Idx(ref e) => CaseError::Idx(e.clone()),
-            ConvError::Univ(ref e) => CaseError::Univ(e.clone()),
-            ConvError::Red(ref e) => CaseError::Red(e.clone()),
+            ConvError::Anomaly(s) => CaseError::Anomaly(s),
+            ConvError::Env(e) => CaseError::Env(e),
+            ConvError::Idx(e) => CaseError::Idx(e),
+            ConvError::Univ(e) => CaseError::Univ(e),
+            ConvError::Red(e) => CaseError::Red(e),
             ConvError::NotFound => CaseError::NotFound,
             ConvError::NotConvertible => CaseError::Type(make_type_error()),
             // NOTE: Should not actually happen, but seems harmless enough.
