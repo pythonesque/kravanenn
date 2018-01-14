@@ -1260,10 +1260,8 @@ impl<'id, 'a, 'b> Subs<'id, 'a, 'b> {
             },
             Constr::Fix(ref o) => {
                 let Fix(Fix2(_, i), _) = **o;
-                // TODO: Verify that this is checked at some point during typechecking.
-                // FIXME: Verify that i < reci.len() (etc.) is checked at some point during
-                // typechecking.
-                let i = usize::try_from(i).map_err(IdxError::from)?;
+                // NOTE: i < reci.len() and can be cast to usize is checked during typechecking.
+                let i = i as usize;
                 let env = self.clone(); // expensive
                 Ok(FConstr {
                     norm: Cell::new(RedState::Cstr),
@@ -1272,10 +1270,8 @@ impl<'id, 'a, 'b> Subs<'id, 'a, 'b> {
             },
             Constr::CoFix(ref o) => {
                 let CoFix(i, _) = **o;
-                // TODO: Verify that this is checked at some point during typechecking.
-                // FIXME: Verify that i < reci.len() (etc.) is checked at some point during
-                // typechecking.
-                let i = usize::try_from(i).map_err(IdxError::from)?;
+                // NOTE: i < reci.len() and can be cast to usize is checked during typechecking.
+                let i = i as usize;
                 let env = self.clone(); // expensive
                 Ok(FConstr {
                     norm: Cell::new(RedState::Cstr),
@@ -1814,8 +1810,8 @@ impl<'id, 'a, 'b, S> Stack<'id, 'a, 'b, !, S> { */
             Some(Some(RecordBody(_, ref projs, _))) if mib.finite != Finite::CoFinite => {
                 // (Construct, pars1 .. parsm :: arg1...argn :: []) ~= (f, s') ->
                 // arg1..argn ~= (proj1 t...projn t) where t = zip (f,s')
-                // TODO: Verify that this is checked at some point during typechecking.
-                let pars = usize::try_from(mib.nparams).map_err(IdxError::from)?;
+                // NOTE: Environment well-formedness means mib.nparams can always be cast to usize.
+                let pars = mib.nparams as usize;
                 let right = f.fapp_stack_mut(set_, s_, ctx_)?;
                 let (depth, mut args) = s.strip_update_shift_app(set, m, ctx)?;
                 // Try to drop the params, might fail on partially applied constructors.
@@ -2122,11 +2118,13 @@ impl<'id, 'a, 'b, S> Stack<'id, 'a, 'b, !, S> { */
                     match shead {
                         StackMember::CaseT(o, env, i) => {
                             let (ref ci, _, _, ref br) = **o;
-                            // TODO: Verify that this is checked at some point during typechecking.
-                            let npar = usize::try_from(ci.npar).map_err(IdxError::from)?;
+                            // NOTE: We verify that npar can be safely cast to usize during
+                            // typechecking.
+                            let npar = ci.npar as usize;
                             args.drop_parameters(&info.set, depth, npar, ctx)?;
-                            // TODO: Verify that this is checked at some point during typechecking.
-                            let c = usize::try_from(c).map_err(IdxError::from)?;
+                            // NOTE: We verify that c can be safely cast to usize (and is nonzero)
+                            // during typechecking.
+                            let c = c as usize;
                             self.extend(args.0.into_iter());
                             // Mutual tail recursion is fine in OCaml, but not Rust.
                             // FIXME: Verify that after typechecking, c > 0.

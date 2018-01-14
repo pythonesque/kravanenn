@@ -140,6 +140,12 @@ impl ::std::convert::From<Box<SpecialRedError>> for IndEvaluationError {
     }
 }
 
+impl ::std::convert::From<IdxError> for IndEvaluationError {
+    fn from(e: IdxError) -> Self {
+        IndEvaluationError::Subst(e.into())
+    }
+}
+
 impl ::std::convert::From<SubstError> for IndEvaluationError {
     fn from(e: SubstError) -> Self {
         IndEvaluationError::Subst(e)
@@ -542,14 +548,22 @@ impl<'b, 'g> Env<'b, 'g> {
     /// Bind expected levels of parameters to actual levels
     /// Propagate the new levels in the signature
     ///
+    /// NOTE: Accepts an extra argument, extra, that gets appended to the env rel_context
+    ///       prior to use.  Note that just as rel_context is reversed from the OCaml
+    ///       implementation, so is extra.
+    ///
+    /// NOTE: Precondition: self; extra must be well-formed (FIXME: precise definition).
+    ///
     /// NOTE: Panics if there are more uniform parameters exp than RDecls ctx.
     ///
     /// NOTE: All args must be typechecked beforehand!
-    fn make_subst<'a1, 'a2, I1, I2>(&self, ctx: I1, mut exp: &List<Opt<Level>>,
-                                    mut args: I2) -> SpecialRedResult<HashMap<Level, Univ>>
+    fn make_subst<'a1, 'a2, 'a3, I1, I2, I3>(&self, ctx: I1, mut exp: &List<Opt<Level>>,
+                                             mut args: I2,
+                                             extra: I3) -> SpecialRedResult<HashMap<Level, Univ>>
         where
             I1: Iterator<Item=&'a1 RDecl>,
             I2: Iterator<Item=&'a2 Constr>,
+            I3: Iterator<Item=&'a3 RDecl> + Clone,
     {
         let mut subst = HashMap::new();
         for d in ctx {
@@ -567,7 +581,8 @@ impl<'b, 'g> Env<'b, 'g> {
                         // to be greater than the level of the argument; this is probably
                         // a useless extra constraint
                         let a = a.clone();
-                        let s = self.dest_arity(a)?.1.as_univ(&self.globals.univ_hcons_tbl);
+                        let s = self.dest_arity(a, extra.clone())?.1
+                                    .as_univ(&self.globals.univ_hcons_tbl);
                         cons_subst(u.clone(), s, &mut subst, &self.globals.univ_hcons_tbl)?;
                     }
                 } else if let Some(ref u) = *u {
@@ -597,13 +612,21 @@ impl<'b, 'g> Env<'b, 'g> {
     /// NOTE: Panics if there are more uniform parameters ar.param_levels than RDecls ctx.
     ///
     /// NOTE: All argsorts must be typechecked beforehand!
-    pub fn instantiate_universes<'a1, 'a2, I1, I2>(&self, ctx: I1, ar: &PolArity,
-                                                   argsorts: I2) -> SpecialRedResult<Sort>
+    ///
+    /// NOTE: Accepts an extra argument, extra, that gets appended to the env rel_context
+    ///       prior to use.  Note that just as rel_context is reversed from the OCaml
+    ///       implementation, so is extra.
+    ///
+    /// NOTE: Precondition: self; extra must be well-formed (FIXME: precise definition).
+    pub fn instantiate_universes<'a1, 'a2, 'a3, I1, I2, I3>(&self, ctx: I1, ar: &PolArity,
+                                                            argsorts: I2,
+                                                            extra: I3) -> SpecialRedResult<Sort>
         where
             I1: Iterator<Item=&'a1 RDecl>,
             I2: Iterator<Item=&'a2 Constr>,
+            I3: Iterator<Item=&'a3 RDecl> + Clone,
     {
-        let subst = self.make_subst(ctx, &ar.param_levels, argsorts)?;
+        let subst = self.make_subst(ctx, &ar.param_levels, argsorts, extra)?;
         let level = ar.level.subst_univs(&self.globals.univ_hcons_tbl, |l| subst.get(l))?;
         // FIXME: We should be able to spend slightly less redundant work here checking
         // equivalence to Set and Prop.  But LLVM may be able to optimize it away.
@@ -621,10 +644,18 @@ impl<'b, 'g> Env<'b, 'g> {
     ///       ar.param_levels (if mip.arity = TemplateArity(ar)).
     ///
     /// NOTE: All paramtyps must be typechecked beforehand!
-    fn type_of_inductive_gen<'a, I>(&self, ((mib, mip), u): (MindSpecif<'g>, &Instance),
-                                    paramtyps: I) -> IndEvaluationResult<Cow<'g, Constr>>
+    ///
+    /// NOTE: Accepts an extra argument, extra, that gets appended to the env rel_context
+    ///       prior to use.  Note that just as rel_context is reversed from the OCaml
+    ///       implementation, so is extra.
+    ///
+    /// NOTE: Precondition: self; extra must be well-formed (FIXME: precise definition).
+    fn type_of_inductive_gen<'a1, 'a2, I1, I2>(&self, ((mib, mip), u): (MindSpecif<'g>, &Instance),
+                                               paramtyps: I1,
+                                               extra: I2) -> IndEvaluationResult<Cow<'g, Constr>>
         where
-             I: Iterator<Item=&'a Constr>,
+             I1: Iterator<Item=&'a1 Constr>,
+             I2: Iterator<Item=&'a2 RDecl> + Clone,
     {
         match mip.arity {
             IndArity::RegularArity(ref a) => {
@@ -640,7 +671,7 @@ impl<'b, 'g> Env<'b, 'g> {
                 // reversed order as well?  Probably not re: the latter...
                 // FIXME: expensive
                 let ctx: Vec<_> = mip.arity_ctxt.iter().collect();
-                let s = self.instantiate_universes(ctx.into_iter().rev(), ar, paramtyps)?;
+                let s = self.instantiate_universes(ctx.into_iter().rev(), ar, paramtyps, extra)?;
                 let Ok(c) = Constr::mk_arity(mip.arity_ctxt.iter().map(Ok::<_, !>), s,
                                              RDecl::clone);
                 Ok(Cow::Owned(c))
@@ -652,22 +683,40 @@ impl<'b, 'g> Env<'b, 'g> {
     ///       ar.param_levels (if mip.0.1.arity = TemplateArity(ar)).
     ///
     /// NOTE: All args must be typechecked beforehand!
-    pub fn type_of_inductive_knowing_parameters<'a, I>(&self, mip: (MindSpecif<'g>, &Instance),
-                                                       args: I) ->
-                                                       IndEvaluationResult<Cow<'g, Constr>>
+    ///
+    /// NOTE: Accepts an extra argument, extra, that gets appended to the env rel_context
+    ///       prior to use.  Note that just as rel_context is reversed from the OCaml
+    ///       implementation, so is extra.
+    ///
+    /// NOTE: Precondition: self; extra must be well-formed (FIXME: precise definition).
+    pub fn type_of_inductive_knowing_parameters<'a1, 'a2, I1, I2>(&self,
+                                                                  mip: (MindSpecif<'g>, &Instance),
+                                                                  args: I1,
+                                                                  extra: I2) ->
+            IndEvaluationResult<Cow<'g, Constr>>
         where
-            I: Iterator<Item=&'a Constr>,
+            I1: Iterator<Item=&'a1 Constr>,
+            I2: Iterator<Item=&'a2 RDecl> + Clone,
     {
-        self.type_of_inductive_gen(mip, args)
+        self.type_of_inductive_gen(mip, args, extra)
     }
 
     /// Type of a (non applied) inductive type
     ///
     /// NOTE: Panics if the mip arity_ctxt has length less than the number of uniform parameters
     ///       ar.param_levels (if mip.0.1.arity = TemplateArity(ar)).
-    pub fn type_of_inductive(&self, mip: (MindSpecif<'g>, &Instance)) ->
-                             IndEvaluationResult<Cow<'g, Constr>> {
-        self.type_of_inductive_knowing_parameters(mip, iter::empty())
+    ///
+    /// NOTE: Accepts an extra argument, extra, that gets appended to the env rel_context
+    ///       prior to use.  Note that just as rel_context is reversed from the OCaml
+    ///       implementation, so is extra.
+    ///
+    /// NOTE: Precondition: self; extra must be well-formed (FIXME: precise definition).
+    pub fn type_of_inductive<'a, I>(&self, mip: (MindSpecif<'g>, &Instance), extra: I) ->
+                                    IndEvaluationResult<Cow<'g, Constr>>
+        where
+            I: Iterator<Item=&'a RDecl> + Clone,
+    {
+        self.type_of_inductive_knowing_parameters(mip, iter::empty(), extra)
     }
 }
 
@@ -794,10 +843,12 @@ impl PUniverses<Ind> {
     }
 
     /// NOTE: Panics if mip.arity_ctxt does not have at least mip.nrealdecls entries.
+    ///
+    /// NOTE: Panics if mip.nrealdecls cannot be safely cast to usize.
     fn build_dependent_inductive(self, (_, mip): MindSpecif,
                                  params: &[&Constr]) -> IdxResult<Constr> {
-        // TODO: Check to see if nrealdecls being a legal usize is guaranteed elsewhere.
-        let nrealdecls = usize::try_from(mip.nrealdecls).map_err(IdxError::from)?;
+        // Safe by precondition.
+        let nrealdecls = mip.nrealdecls as usize;
         // "Real" arguments (with let, no params).  i.e., indices (if the inductive is
         // well-formed).
         let realargs = mip.arity_ctxt.iter().take(nrealdecls);
@@ -841,6 +892,8 @@ impl PUniverses<Ind> {
     }
 
     /// NOTE: Panics if specif.1.arity_ctxt does not have at least specif.1.nrealdecls entries.
+    ///
+    /// NOTE: Panics if mip.nrealdecls cannot be safely cast to usize.
     ///
     /// NOTE: pj, specif.0.params_ctxt, specif.1.arity_ctxt, and params should be typechecked
     /// beforehand!
@@ -1081,6 +1134,10 @@ impl PUniverses<Ind> {
     ///
     /// NOTE: Panics if specif.1.arity_ctxt does not have at least specif.1.nrealdecls entries.
     ///
+    /// NOTE: Panics if specif.0.nparams cannot be safely cast to usize.
+    ///
+    /// NOTE: Panics if mip.nrealdecls cannot be safely cast to usize.
+    ///
     /// NOTE: pj, specif.0.params_ctxt, specif.1.arity_ctxt, and largs should be typechecked
     /// beforehand!
     ///
@@ -1104,7 +1161,8 @@ impl PUniverses<Ind> {
             CaseResult<'e, 'b, 'g, (&'e mut Env<'b, 'g>, Vec<Constr>, Constr)> {
         let specif = if let Some(specif) = env.globals.lookup_mind_specif(&self.0)? { specif }
                      else { return Err(Box::new(CaseError::NotFound)) };
-        let nparams = usize::try_from(specif.0.nparams).map_err(IdxError::from)?;
+        // Safe by precondition.
+        let nparams = specif.0.nparams as usize;
         // TODO: Figure out whether we actually check this ahead of time; if not, we should
         // probably return an error here instead of throwing.
         let (params, realargs) = largs.split_at(nparams);

@@ -305,6 +305,7 @@ impl Constr {
     }
 
     /// (noccur_between n m M) returns true iff (Rel p) does NOT occur in term M
+    /// for n <= p < n+m
     pub fn noccur_between(&self, n: i64, m: i64) -> IdxResult<bool> {
         match self.occur_between_rec(&n, m) {
             Ok(()) => Ok(true),

@@ -326,7 +326,7 @@ impl<'id, 'a, 'b, Inst, Shft> Stack<'id, 'a, 'b, Inst, Shft> {
 impl Constr {
     /// Reduction functions
 
-    /// Note: self must be type-checked beforehand!
+    /// Note: self must be type-checked beforehand in the empty context!
     ///
     /// This function is a bit weird because it actually mutates self in place.  This seems like it
     /// might not be the desired behavior, but it turns out to be quite convenient (in particular,
@@ -362,7 +362,12 @@ impl Constr {
 
     /// Note: self must be type-checked beforehand!
     ///
+    /// NOTE: Precondition: env; extra must be well-formed (FIXME: precise definition).
+    ///
     /// Mutates self in place; see whd_betaiotazeta for more information.
+    ///
+    /// NOTE: Accepts an extra argument, extra, that gets appended to rel_context prior to use.
+    /// Note that just as rel_context is reversed from the OCaml implementation, so is extra.
     pub fn whd_all<'a, 'b, 'g, I>(&mut self, env: &'a Env<'b, 'g>, extra: I) -> RedResult<()>
         where
             'g: 'b,
@@ -396,7 +401,12 @@ impl Constr {
 
     /// Note: self must be type-checked beforehand!
     ///
+    /// NOTE: Precondition: env; extra must be well-formed (FIXME: precise definition).
+    ///
     /// Mutates self in place; see whd_betaiotazeta for more information.
+    ///
+    /// NOTE: Accepts an extra argument, extra, that gets appended to rel_context prior to use.
+    /// Note that just as rel_context is reversed from the OCaml implementation, so is extra.
     pub fn whd_allnolet<'a, 'b, 'g, I>(&mut self, env: &'a Env<'b, 'g>, extra: I) -> RedResult<()>
         where
             'g: 'b,
@@ -635,7 +645,11 @@ impl<'g> Globals<'g> {
 
 impl<'id, 'id_, 'a, 'c, 'b, 'g> ClosInfos<'id, 'a, 'b> where 'g: 'b {
     /// Conversion between [lft1]term1 and [lft2]term2.
+    ///
     /// Note: term1 and term2 must be type-checked beforehand!
+    ///
+    /// NOTE: Precondition: self and infos_ must be well-formed in the context of globals, univ,
+    ///       and enga (FIXME: precise definition).
     fn ccnv<'r>(self,
                 infos_: ClosInfos<'id_, 'c, 'b>,
                 univ: &Universes, enga: &Engagement,
@@ -664,8 +678,12 @@ impl<'id, 'id_, 'a, 'c, 'b, 'g> ClosInfos<'id, 'a, 'b> where 'g: 'b {
     }
 
     /// Conversion between [lft1](hd1 v1) and [lft2](hd2 v2)
+    ///
     /// Note: term1 and term2 must be type-checked beforehand in the context of stk1 and stk2,
     /// respectively!
+    ///
+    /// NOTE: Precondition: self and infos_ must be well-formed in the context of globals, univ,
+    ///       and enga (FIXME: precise definition).
     fn eqappr<'r>(mut self, mut infos_: ClosInfos<'id_, 'c, 'b>,
                   univ: &Universes, enga: &Engagement,
                   globals: &'r Globals<'g>, mut cv_pb: ConvPb,
@@ -1213,6 +1231,9 @@ impl<'id, 'id_, 'a, 'c, 'b, 'g> ClosInfos<'id, 'a, 'b> where 'g: 'b {
     }
 
     /// Note: stk1 and stk2 must be type-checked beforehand!
+    ///
+    /// NOTE: Precondition: self and infos_ must be well-formed in the context of globals, univ,
+    ///       and enga (FIXME: precise definition).
     fn convert_stacks<'r>(self, infos_: ClosInfos<'id_, 'c, 'b>,
                           univ: &Universes, enga: &Engagement,
                           globals: &'r Globals<'g>,
@@ -1256,6 +1277,11 @@ impl<'id, 'id_, 'a, 'c, 'b, 'g> ClosInfos<'id, 'a, 'b> where 'g: 'b {
 
 impl<'b, 'g> Env<'b, 'g> {
     /// Note: t1 and t2 must be type-checked beforehand!
+    ///
+    /// NOTE: Precondition: self; extra must be well-formed (FIXME: precise definition).
+    ///
+    /// NOTE: Accepts an extra argument, extra, that gets appended to rel_context prior to use.
+    /// Note that just as rel_context is reversed from the OCaml implementation, so is extra.
     fn clos_fconv<'a, I>(&'a self, cv_pb: ConvPb, eager_delta: bool,
                          t1: &Constr, t2: &Constr, extra: I) -> ConvResult<()>
         where
@@ -1337,6 +1363,11 @@ impl<'b, 'g> Env<'b, 'g> {
     }
 
     /// Note: t1 and t2 must be type-checked beforehand!
+    ///
+    /// NOTE: Precondition: self; extra must be well-formed (FIXME: precise definition).
+    ///
+    /// NOTE: Accepts an extra argument, extra, that gets appended to rel_context prior to use.
+    /// Note that just as rel_context is reversed from the OCaml implementation, so is extra.
     fn fconv<'a, I>(&'a self, cv_pb: ConvPb, eager_delta: bool,
                     t1: &Constr, t2: &Constr, extra: I) -> ConvResult<()>
         where I: Iterator<Item=&'a RDecl> + Clone,
@@ -1346,6 +1377,11 @@ impl<'b, 'g> Env<'b, 'g> {
     }
 
     /// Note: t1 and t2 must be type-checked beforehand!
+    ///
+    /// NOTE: Precondition: self; extra must be well-formed (FIXME: precise definition).
+    ///
+    /// NOTE: Accepts an extra argument, extra, that gets appended to rel_context prior to use.
+    /// Note that just as rel_context is reversed from the OCaml implementation, so is extra.
     pub fn conv<'a, I>(&'a self, t1: &Constr, t2: &Constr, extra: I) -> ConvResult<()>
         where I: Iterator<Item=&'a RDecl> + Clone,
     {
@@ -1353,6 +1389,11 @@ impl<'b, 'g> Env<'b, 'g> {
     }
 
     /// Note: t1 and t2 must be type-checked beforehand!
+    ///
+    /// NOTE: Precondition: self; extra must be well-formed (FIXME: precise definition).
+    ///
+    /// NOTE: Accepts an extra argument, extra, that gets appended to rel_context prior to use.
+    /// Note that just as rel_context is reversed from the OCaml implementation, so is extra.
     pub fn conv_leq<'a, I>(&'a self, t1: &Constr, t2: &Constr, extra: I) -> ConvResult<()>
         where
             I: Iterator<Item=&'a RDecl> + Clone,
@@ -1363,6 +1404,11 @@ impl<'b, 'g> Env<'b, 'g> {
     /// option for conversion : no compilation for the checker
     ///
     /// Note: t1 and t2 must be type-checked beforehand!
+    ///
+    /// NOTE: Precondition: self; extra must be well-formed (FIXME: precise definition).
+    ///
+    /// NOTE: Accepts an extra argument, extra, that gets appended to rel_context prior to use.
+    /// Note that just as rel_context is reversed from the OCaml implementation, so is extra.
     pub fn vm_conv<'a, I>(&'a self, cv_pb: ConvPb, t1: &Constr, t2: &Constr,
                           extra: I) -> ConvResult<()>
         where
@@ -1383,8 +1429,17 @@ impl<'b, 'g> Env<'b, 'g> {
     /// error message.
     ///
     /// NOTE: t must be typechecked beforehand!
-    fn hnf_prod_app(&self, mut t: Constr, n: &Constr) -> SpecialRedResult<Constr> {
-        t.whd_all(self, iter::empty())?;
+    ///
+    /// NOTE: Precondition: self; extra must be well-formed (FIXME: precise definition).
+    ///
+    /// NOTE: Accepts an extra argument, extra, that gets appended to rel_context prior to use.
+    /// Note that just as rel_context is reversed from the OCaml implementation, so is extra.
+    fn hnf_prod_app<'a, I>(&'a self, mut t: Constr, n: &Constr,
+                           extra: I) -> SpecialRedResult<Constr>
+        where
+            I: Iterator<Item=&'a RDecl>,
+    {
+        t.whd_all(self, extra)?;
         match t {
             Constr::Prod(o) => {
                 let (_, _, ref b) = *o;
@@ -1396,10 +1451,25 @@ impl<'b, 'g> Env<'b, 'g> {
 
     /// Pseudo-reduction rule  Prod(x,A,B) a --> B[x\a]
     ///
-    /// NOTE: t must be typechecked beforehand!
-    pub fn hnf_prod_applist(&self, mut t: Constr, nl: &[Constr]) -> SpecialRedResult<Constr> {
-        for n in nl.iter().rev() {
-            t = self.hnf_prod_app(t, n)?;
+    /// NOTE: Precondition:
+    ///
+    ///       ∀ i : nat, 0 ≤ i < len nl → t ≡ ∀ a_0 a_1 ... a_i. b →
+    ///       [nl[i]/1][nl[i-1]/1]...[nl[0]/1]b is well-typed.
+    ///
+    ///       Note that the above implies t itself is well-typed.
+    ///
+    /// NOTE: Precondition: self; extra must be well-formed (FIXME: precise definition).
+    ///
+    /// NOTE: Accepts an extra argument, extra, that gets appended to rel_context prior to use.
+    /// Note that just as rel_context is reversed from the OCaml implementation, so is extra.
+    pub fn hnf_prod_applist<'a1, 'a2, I1, I2>(&'a2 self, mut t: Constr, nl: I1,
+                                              extra: I2) -> SpecialRedResult<Constr>
+        where
+            I1: Iterator<Item=&'a1 Constr>,
+            I2: Iterator<Item=&'a2 RDecl> + Clone,
+    {
+        for n in nl {
+            t = self.hnf_prod_app(t, n, extra.clone())?;
         }
         Ok(t)
     }
@@ -1409,6 +1479,12 @@ impl<'b, 'g> Env<'b, 'g> {
     /// Recognizing products and arities modulo reduction
     ///
     /// NOTE: c must be type-checked beforehand!
+    ///
+    /// NOTE: Accepts an extra argument, prefix, that gets prepended to the locally maintained
+    ///       rel_context prior to use.  Note that just as rel_context is reversed from the
+    ///       OCaml implementation, so is prefix.
+    ///
+    /// NOTE: Precondition: self; prefix must be well-formed (FIXME: precise definition).
     pub fn dest_prod<'a, I>(&self, mut c: Constr, prefix: I) -> RedResult<(Vec<RDecl>, Constr)>
         where
             I: Iterator<Item=&'a RDecl> + Clone,
@@ -1432,10 +1508,21 @@ impl<'b, 'g> Env<'b, 'g> {
     /// The same but preserving lets in the context, not internal ones.
     ///
     /// Note: ty must be type-checked beforehand!
-    pub fn dest_prod_assum(&self, mut ty: Constr) -> RedResult<(Vec<RDecl>, Constr)> {
+    ///
+    /// NOTE: Accepts an extra argument, prefix, that gets prepended to the locally maintained
+    ///       rel_context prior to use.  Note that just as rel_context is reversed from the
+    ///       OCaml implementation, so is prefix.
+    ///
+    /// NOTE: Precondition: self; prefix must be well-formed (FIXME: precise definition).
+    pub fn dest_prod_assum<'a, I>(&self, mut ty: Constr,
+                                  prefix: I) -> RedResult<(Vec<RDecl>, Constr)>
+        where
+            I: Iterator<Item=&'a RDecl> + Clone,
+    {
         let mut l = Vec::new();
         loop {
-            ty.whd_allnolet(self, l.iter())?;
+            let prefix = prefix.clone();
+            ty.whd_allnolet(self, prefix.clone().map( |d| d.borrow()).chain(l.iter()))?;
             match ty {
                 Constr::Prod(o) => {
                     let (ref x, ref t, ref c) = *o;
@@ -1455,7 +1542,7 @@ impl<'b, 'g> Env<'b, 'g> {
                 },
                 _ => {
                     let mut ty_ = ty.clone();
-                    ty_.whd_all(self, l.iter())?;
+                    ty_.whd_all(self, prefix.clone().map( |d| d.borrow()).chain(l.iter()))?;
                     if ty_.eq(&ty) { return Ok((l, ty)) }
                     else { ty = ty_; }
                 },
@@ -1464,10 +1551,20 @@ impl<'b, 'g> Env<'b, 'g> {
     }
 
     /// Note: ty must be type-checked beforehand!
-    pub fn dest_lam_assum(&self, mut ty: Constr) -> RedResult<(Vec<RDecl>, Constr)> {
+    ///
+    /// NOTE: Accepts an extra argument, prefix, that gets prepended to the locally maintained
+    ///       rel_context prior to use.  Note that just as rel_context is reversed from the
+    ///       OCaml implementation, so is prefix.
+    ///
+    /// NOTE: Precondition: self; prefix must be well-formed (FIXME: precise definition).
+    pub fn dest_lam_assum<'a, I>(&self, mut ty: Constr,
+                                 prefix: I) -> RedResult<(Vec<RDecl>, Constr)>
+        where
+            I: Iterator<Item=&'a RDecl> + Clone,
+    {
         let mut l = Vec::new();
         loop {
-            ty.whd_allnolet(self, l.iter())?;
+            ty.whd_allnolet(self, prefix.clone().map( |d| d.borrow()).chain(l.iter()))?;
             match ty {
                 Constr::Lambda(o) => {
                     let (ref x, ref t, ref c) = *o;
@@ -1491,8 +1588,17 @@ impl<'b, 'g> Env<'b, 'g> {
     }
 
     /// Note: c must be type-checked beforehand!
-    pub fn dest_arity(&self, c: Constr) -> SpecialRedResult<Arity> {
-        let (l, c) = self.dest_prod_assum(c)?;
+    ///
+    /// NOTE: Accepts an extra argument, prefix, that gets prepended to the locally maintained
+    ///       rel_context prior to use.  Note that just as rel_context is reversed from the
+    ///       OCaml implementation, so is prefix.
+    ///
+    /// NOTE: Precondition: self; prefix must be well-formed (FIXME: precise definition).
+    pub fn dest_arity<'a, I>(&self, c: Constr, prefix: I) -> SpecialRedResult<Arity>
+        where
+            I: Iterator<Item=&'a RDecl> + Clone,
+    {
+        let (l, c) = self.dest_prod_assum(c, prefix)?;
         match c {
             Constr::Sort(s) => Ok((l, s)),
             _ => Err(Box::new(SpecialRedError::UserError("Not an arity".into()))),

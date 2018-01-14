@@ -11,6 +11,7 @@
 #![feature(slice_patterns)]
 #![feature(conservative_impl_trait)]
 #![feature(iterator_try_fold)]
+#![feature(inclusive_range_syntax)]
 extern crate fixedbitset;
 #[macro_use] extern crate serde_state as serde;
 #[macro_use] extern crate serde_derive_state;

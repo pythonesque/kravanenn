@@ -205,7 +205,8 @@ impl<'b, 'g> Env<'b, 'g> {
                 // reversed order as well?  Probably not re: the latter...
                 // FIXME: expensive
                 let ctx: Vec<_> = sign.iter().collect();
-                let s = self.instantiate_universes(ctx.iter().map( |&x| x).rev(), ar, paramtyps)?;
+                let s = self.instantiate_universes(ctx.iter().map( |&x| x).rev(), ar, paramtyps,
+                                                   iter::empty())?;
                 let Ok(ty) = Constr::mk_arity(ctx.into_iter().rev().map(Ok::<_, !>), s,
                                               RDecl::clone);
                 Ok(Cow::Owned(ty))
@@ -491,7 +492,7 @@ impl<'b, 'g> Env<'b, 'g> {
             return Err(Box::new(CaseError::Failure(format!("Cannot find inductive: {:?}",
                                                            ind.name))))
         };
-        Ok(self.type_of_inductive_knowing_parameters((specif, u), paramstyp)?)
+        Ok(self.type_of_inductive_knowing_parameters((specif, u), paramstyp, iter::empty())?)
     }
 
     /// NOTE: Panics if specif.1.arity_ctxt has length less than the number of uniform
@@ -580,6 +581,10 @@ impl<'b, 'g> Env<'b, 'g> {
     ///       idx from 1 to specif.1.nf_lc.len().
     ///
     /// NOTE: Panics if specif.1.arity_ctxt does not have at least specif.1.nrealdecls entries.
+    ///
+    /// NOTE: Panics if specif.0.nparams cannot be safely cast to usize.
+    ///
+    /// NOTE: Panics if specif.1.nrealdecls cannot be safely cast to usize.
     ///
     /// NOTE: Returned Constr may include references to p, c, and parts of cj.
     ///
@@ -844,6 +849,11 @@ impl<'b, 'g> Env<'b, 'g> {
                 let (env, cj) = self.execute(c)?;
                 let (env, pj) = env.execute(p)?;
                 let (env, lfj) = env.execute_array(lf)?;
+                // Note: by environment well-formedness, for all inductive types in the
+                // environment specif = (mind, one_ind), mind.nparams can be cast to usize,
+                // one_ind.arity_ctxt has at least specif.0.nrealdecls entries, specif.1.nrealdecls
+                // can be cast to usize, and arity_ctxt and params_ctxt typecheck in the current
+                // environment with empty rdecls (therefore, in any compatible environment).
                 env.judge_of_case(ci, p, &pj, c, &cj, &lfj)
             },
             Constr::Fix(ref o) => {
@@ -958,26 +968,37 @@ impl<'b, 'g> Env<'b, 'g> {
 
     /// Typing of several terms.
     ///
-    /// NOTE: rels should be reversed compared to the order in the OCaml version.
+    /// NOTE: rels should be provided in the *same* order as in the OCaml version.
     ///
     /// NOTE: Precondition: self is well-formed (FIXME: precise definition).
     ///
     /// NOTE: Postcondition: Loosely speaking: each local definition in rels is
     ///       well-typed in the context of all the previous definitions, and env
-    ///       includes all the definitions in rels.
+    ///       includes all the definitions in rels (notably, all LocalAssums have
+    ///       types that typecheck as sorts in the context of all the previous declarations,
+    ///       and all LocalDefs have bodies that typecheck in the context of the previous
+    ///       declarations, types that typecheck in the context of the previous declarations, and
+    ///       the inferred type of the body (which we know has type sort) is convertible with the
+    ///       explicit type of the LocalDef.
     ///
     /// NOTE: Unlike the OCaml, which returns the updated environment, we return the old
     ///       environment (we try to keep the environment pristine on success); it turns
     ///       out that none of its callers actually want the updated environment.
-    pub fn check_ctxt<'e, I>(&'e mut self,
-                             rels: I) -> CaseResult<'e, 'b, 'g, &'e mut Self>
-        where
-            I: Iterator<Item=RDecl>,
+    ///
+    /// NOTE: Returns the checked RDecls on success, in reverse order from the OCaml
+    ///       implementation.  This is useful because it means you can sometimes avoid repeatedly
+    ///       cloning all the RDecls inside some Rctxt.
+    pub fn check_ctxt<'e>(&'e mut self,
+                          rels: Vec<RDecl>) -> CaseResult<'e, 'b, 'g, (&'e mut Self, Vec<RDecl>)>
     {
         let rdecl_orig_len = self.rel_context.len();
         let mut env = self;
-        // fold_rel_context goes backwards; since rels is reversed, we go forwards on it.
-        for d in rels {
+        // Take advantage of the fact that we know how many rels we minimally need (if we're
+        // successful).
+        env.rel_context.reserve(rels.len());
+        // fold_rel_context goes backwards, so we go backwards on rels.
+        // TODO: consider using something more efficient (like drain).
+        for d in rels.into_iter().rev() {
             let env_ = env;
             env = match d {
                 RDecl::LocalAssum(_, ref ty) => { let (env_, _) = env_.infer_type(ty)?; env_ },
@@ -992,14 +1013,21 @@ impl<'b, 'g> Env<'b, 'g> {
             };
             env.push_rel(d)
         }
-        // Make sure to unwind the rel_context on success.
+        // Make sure to unwind the rel_context on success (remembering the declarations that were
+        // appended [in reverse] as decls).
+        let decls = env.rel_context.split_off(rdecl_orig_len);
         // Note that we currently don't pop the rel if there was an error, even if it
         // wasn't a TypeError that consumed the env.
-        env.rel_context.truncate(rdecl_orig_len);
-        Ok(env)
+        Ok((env, decls))
     }
 
     /// Polymorphic arities utils
+    ///
+    /// NOTE: Accepts an extra argument, prefix, that gets prepended to the locally maintained
+    ///       rel_context prior to use.  Note that just as rel_context is reversed from the
+    ///       OCaml implementation, so is prefix.
+    ///
+    /// NOTE: Precondition: self is well-formed (FIXME: precise definition).
     ///
     /// NOTE: Precondition: ∃ ty : constr, self ⊢ ar : ty
     ///
@@ -1021,42 +1049,52 @@ impl<'b, 'g> Env<'b, 'g> {
         return Err(Box::new(CaseError::Failure("not the correct sort".into())))
     }
 
-    /// NOTE: params should be reversed compared to the order in the OCaml version.
+    /// NOTE: params should be in the *same* order as the OCaml version.
     ///
-    /// NOTE: Precondition: len par.param_levels ≤ len params
+    /// NOTE: Precondition: self is well-formed (FIXME: precise definition).
     ///
     /// NOTE: Precondition:
     ///
-    /// ∀ i : nat, 0 ≤ i < len par.param_levels →
+    /// ∀ i : nat, 0 ≤ i < len params → i < len par.param_levels →
     /// ∃ u : level, par.param_levels[i] = Some u →
-    /// ∃ ty : constr, params[i] = LocalAssum(_, ty) →
-    /// ∃ s : constr, self; params[0..i] ⊢ ty : s
+    /// ∃ ty : constr, params[len params - i - 1] = LocalAssum(_, ty) →
+    /// ∃ s : constr, self; rev params[i + 1..] ⊢ ty : s
     ///
     /// NOTE: Postcondition:
     ///
+    /// len par.param_levels ≤ len params ∧
     /// ∀ i : nat, 0 ≤ i < len par.param_levels →
     /// ∃ u : level, par.param_levels[i] = Some u →
     /// ∃ (ty : constr) (ctx : rel_context),
-    /// params[i] = LocalAssum(_, ty) ∧
-    /// self; params[0..i] ⊨ ty ≡ mk_arity ctx (Sort (Type [u]))
-    pub fn check_polymorphic_arity<'e, I>(&self, mut params: I,
-                                          par: &PolArity) -> CaseResult<'e, 'b, 'g, ()>
-        where
-            I: Iterator<Item=RDecl>,
+    /// params[len params - i - 1] = LocalAssum(_, ty) ∧
+    /// self; rev params[i + 1..] ⊨ ty ≡ mk_arity ctx (Sort (Type [u]))
+    pub fn check_polymorphic_arity<'e>(&self, params: &[RDecl],
+                                       par: &PolArity) -> CaseResult<'e, 'b, 'g, ()>
     {
         const ERR : &'static str = "check_poly: not the right number of params";
         let pl = &par.param_levels;
-        let mut rels = Vec::new();
-        // NOTE: In the OCaml version, params is reversed before iterating, but here the iterator
-        // is already reversed so we do nothing.
-        for p in pl.iter() {
-            let d = params.next().ok_or_else(|| Box::new(CaseError::Failure(ERR.into())))?;
+        let len = params.len();
+        for (i, p) in pl.iter().enumerate() {
+            // NOTE: In the OCaml version, params is reversed before iterating, so we have to
+            // subtract i from params.len().  If that suceeds, we know 0 ≤ params.len() - (i + 1)
+            // NOTE: Adding 1 to i is safe because pl is a linked list, and if it doesn't cycle
+            // forever (in which case this won't work anyway) it takes up more than 1 byte per
+            // node; therefore, there must be fewer than usize::MAX elements in pl.  Thus, as
+            // long as 0 ≤ params.len() - (i + 1),
+            // 0 ≤ params.len() - (i + 1) = params.len() - i - 1 < params.len() - i ≤ params.len().
+            // So if 0 ≤ params.len() - (i + 1), params[params.len() - (i + 1)] is in bounds.
+            let i = len.checked_sub(i + 1)
+                       .ok_or_else(|| Box::new(CaseError::Failure(ERR.into())))?;
             if let Some(ref u) = *p {
-                if let RDecl::LocalAssum(_, ref ty) = d {
-                    self.check_kind(ty.clone(), u.clone(), rels.iter())?
+                if let RDecl::LocalAssum(_, ref ty) = params[i] {
+                    // i + 1 ≤ params.len() because i < params.len(), so the slice is in bounds.
+                    // We do reverse the slice because check_kind expects an iterator
+                    // reversed from the OCaml version; in the OCaml version params params is
+                    // iterated backwards to begin with, then reversed again by pushing onto the
+                    // front of the list, so we have 3 reversals ≡ 1 reversal here.
+                    self.check_kind(ty.clone(), u.clone(), params[i + 1..].iter().rev())?
                 } else { return Err(Box::new(CaseError::Failure(ERR.into()))) }
             }
-            rels.push(d);
         }
         Ok(())
     }

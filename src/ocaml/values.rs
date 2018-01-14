@@ -541,18 +541,22 @@ pub enum IndArity {
 #[derive(Debug, Clone, DeserializeState)]
 #[serde(deserialize_state = "Seed<'de>")]
 pub struct OneInd {
-    #[serde(deserialize_state)] typename: Id,
+    /// Used during typechecking.
+    #[serde(deserialize_state)] pub typename: Id,
     #[serde(deserialize_state)] pub arity_ctxt: Rctxt,
     #[serde(deserialize_state)] pub arity: IndArity,
     #[serde(deserialize_state)] consnames: Array<Id>,
     #[serde(deserialize_state)] pub user_lc: Array<Constr>,
-    nrealargs: Int,
+    /// NOTE: We don't actually *use* nrealargs at the moment, just validate it.
+    pub nrealargs: Int,
     pub nrealdecls: Int,
     #[serde(deserialize_state)] pub kelim: List<SortFam>,
     #[serde(deserialize_state)] pub nf_lc: Array<Constr>,
+    /// NOTE: We don't actually *use* consnrealargs at the moment, and only imperfectly validate
+    /// it (we don't check to see if it's even the same length as the other arrays).
     #[serde(deserialize_state)] pub consnrealargs: Array<Int>,
     #[serde(deserialize_state)] pub consnrealdecls: Array<Int>,
-    #[serde(deserialize_state)] recargs: Wfp,
+    #[serde(deserialize_state)] pub recargs: Wfp,
     nb_constant: Int,
     nb_args: Int,
     #[serde(deserialize_state)] reloc_tbl: Any,
@@ -587,7 +591,7 @@ pub struct IndPack {
     pub ntypes: Int,
     #[serde(deserialize_state)] hyps: SectionCtxt,
     pub nparams: Int,
-    nparams_rec: Int,
+    pub nparams_rec: Int,
     #[serde(deserialize_state)] pub params_ctxt: Rctxt,
     pub polymorphic: Bool,
     #[serde(deserialize_state)] pub universes: Context,
