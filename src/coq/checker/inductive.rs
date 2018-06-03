@@ -37,7 +37,6 @@ use coq::kernel::names::{
     MutInd,
 };
 use core::convert::{TryFrom};
-use core::nonzero::{NonZero};
 use ocaml::de::{
     Array,
     ORef,
@@ -70,6 +69,7 @@ use std::borrow::{Borrow, Cow};
 use std::collections::hash_map::{self, HashMap};
 use std::iter::{self};
 use std::sync::{Arc};
+use util::nonzero::{NonZero};
 
 /// Extracting an inductive type from a construction
 

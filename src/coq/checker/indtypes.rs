@@ -45,7 +45,6 @@ use coq::kernel::names::{
 use coq::lib::rtree::{
     RTreeError,
 };
-use core::nonzero::{NonZero};
 use ocaml::de::{
     ORef,
     Str,
@@ -81,6 +80,7 @@ use std::convert::{TryFrom};
 use std::iter::{self};
 use std::option::{NoneError};
 use std::sync::{Arc};
+use util::nonzero::{NonZero};
 
 /// The different kinds of errors that may result of a malformed inductive
 /// definition.
@@ -1267,7 +1267,7 @@ impl<'g> Globals<'g> {
                         lc: &'a [Constr]) -> IdxResult<Cow<'a, [Constr]>> {
         if let Some(npars) = NonZero::new(npars) {
             // NOTE: Only fails if npars is too big.
-            let npars = Idx::new(npars)?;
+            let npars = Idx::try_new(npars)?;
             let make_abs: IdxResult<Vec<_>> = (1..=ntyps)
                 .map(|i| Constr::Rel(i).lambda_implicit_lift(npars, &self.univ_hcons_tbl))
                 .collect();
@@ -1770,7 +1770,7 @@ impl<'e, 'b, 'g> IEnv<'e, 'b, 'g> {
         };
         if let Err((c, err)) = res {
             // NOTE: 0 ≤ ind.pos < ntypes, so ntypes - ind.pos is in bounds.
-            Err(err.explain_ind_err((ntypes - ind.pos), env, lparams as i64, c))
+            Err(err.explain_ind_err(ntypes - ind.pos, env, lparams as i64, c))
         } else {
             Ok((env, ra_env, RecArg::mk_paths(RecArg::MRec(ORef(Arc::new(ind))), irecargs)))
         }

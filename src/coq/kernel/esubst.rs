@@ -3,7 +3,7 @@ use std::convert::{TryFrom};
 use std::num::{TryFromIntError};
 use std::option::{NoneError};
 // use smallvec::{SmallVec};
-use core::nonzero::{NonZero, Zeroable};
+use util::nonzero::{NonZero, Zeroable};
 
 /*
 
@@ -57,12 +57,36 @@ impl ::std::convert::From<TryFromIntError> for IdxError {
 }
 
 impl Idx {
-    pub fn new<T>(x: NonZero<T>) -> Result<Idx, /*<i32 as TryFrom<u32>>::Error*/IdxError> where i32: TryFrom<T>, T: Zeroable {
+    /// FIXME: switch back to TryFrom or From whenever that gets resolved.
+    // pub fn new<T>(x: NonZero<T>) -> Result<Idx, /*<i32 as TryFrom<u32>>::Error*/IdxError>
+    //     where i32: From<T>, T: Zeroable {
+    pub fn new(x: NonZero<usize>) -> Result<Idx, IdxError> {
+        let i = {
+            // i32::from(x.get());
+            // Taken from try_from macro impl
+            let u = x.get();
+            let min = i32::min_value() as usize;
+            let max = i32::max_value() as usize;
+            if u < min || u > max {
+                return Err(IdxError(()))
+            } else {
+                u as i32
+            }
+        };
+        // The 0 case should not happen, but since From and Zeroable are safe traits it's hard to
+        // enforce this (someone could provide a stupid implementation that didn't map 0 to 0).
+        // Anyway, the purpose of the NonZero in the argument is to have people check for zero
+        // ahead of time.
+        if i > 0 { Ok(Idx(i)) }
+        else { Err(IdxError(())) }
+    }
+
+    pub fn try_new<T>(x: NonZero<T>) -> Result<Idx, /*<i32 as TryFrom<u32>>::Error*/IdxError> where i32: TryFrom<T>, T: Zeroable {
         match i32::try_from(x.get()) {
-            // The 0 case should not happen, but since try_from is a safe trait it's hard to enforce this
-            // (someone could provide a stupid implementation that didn't map 0 to 0).  Anyway, the
-            // purpose of the NonZero in the argument is to have people check for zero ahead of
-            // time.
+            // The 0 case should not happen, but since TryFrom and Zeroable are safe traits it's
+            // hard to enforce this (someone could provide a stupid implementation that didn't
+            // map 0 to 0).  Anyway, the purpose of the NonZero in the argument is to have
+            // people check for zero ahead of time.
             Ok(i) if i > 0 => Ok(Idx(i)),
             _ => Err(IdxError(())),
         }

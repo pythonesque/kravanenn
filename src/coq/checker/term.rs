@@ -4,7 +4,6 @@ use coq::checker::univ::{
 };
 use coq::kernel::esubst::{Idx, IdxError, Lift, IdxResult};
 use core::convert::TryFrom;
-use core::nonzero::NonZero;
 use ocaml::de::{ORef, Array};
 use ocaml::values::{
     CoFix,
@@ -28,6 +27,7 @@ use std::borrow::{Borrow, Cow};
 use std::cell::Cell;
 use std::option::{NoneError};
 use std::sync::{Arc};
+use util::nonzero::{NonZero};
 
 #[derive(Clone,Copy)]
 pub enum Info {
@@ -435,7 +435,7 @@ impl Constr {
     pub fn exliftn(&self, el: &Lift) -> IdxResult<Constr> {
         match *self {
             Constr::Rel(i) =>
-                Ok(Constr::Rel(i32::from(el.reloc_rel(Idx::new(NonZero::new(i)?)?)?) as i64)),
+                Ok(Constr::Rel(i32::from(el.reloc_rel(Idx::try_new(NonZero::new(i)?)?)?) as i64)),
             _ => self.map_constr_with_binders(Lift::lift, Self::exliftn, el)
         }
     }

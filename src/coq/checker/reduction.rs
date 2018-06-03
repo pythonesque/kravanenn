@@ -33,7 +33,6 @@ use coq::kernel::esubst::{
     Lift,
 };
 use core::convert::{TryFrom};
-use core::nonzero::{NonZero};
 use ocaml::de::{
     ORef,
     Array,
@@ -65,6 +64,7 @@ use std::sync::{Arc};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use typed_arena::{Arena};
 use util::ghost_cell::{Set};
+use util::nonzero::{NonZero};
 
 /// lft_constr_stack_elt
 enum ZL<'id, 'a, 'b> where 'b: 'a, 'id: 'a {
@@ -1012,7 +1012,7 @@ impl<'id, 'id_, 'a, 'c, 'b, 'g> ClosInfos<'id, 'a, 'b> where 'g: 'b {
                                                 self, infos_),
                             }
                         },
-                        _ => return (Err(Box::new((ConvError::NotConvertible))), self, infos_),
+                        _ => return (Err(Box::new(ConvError::NotConvertible)), self, infos_),
                     },
                     // Loop through again.
                 },

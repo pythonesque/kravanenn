@@ -21,7 +21,6 @@ use coq::kernel::names::{
     // MpMap,
     MutInd,
 };
-use core::nonzero::{NonZero};
 use ocaml::values::{
     Cb,
     Constr,
@@ -46,6 +45,7 @@ use std::borrow::{Borrow, Cow};
 use std::collections::{HashSet};
 use std::collections::hash_map::{self};
 use std::fmt::{self};
+use util::nonzero::{NonZero};
 
 /// Environments
 

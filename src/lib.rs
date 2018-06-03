@@ -4,14 +4,11 @@
 #![feature(rc_downcast)]
 #![feature(try_from)]
 #![feature(try_trait)]
-#![feature(nonzero)]
 #![feature(never_type)]
 #![feature(drain_filter)]
-#![feature(generic_param_attrs)]
 #![feature(slice_patterns)]
-#![feature(conservative_impl_trait)]
 #![feature(iterator_try_fold)]
-#![feature(inclusive_range_syntax)]
+#![feature(exhaustive_patterns)]
 extern crate fixedbitset;
 #[macro_use] extern crate serde_state as serde;
 #[macro_use] extern crate serde_derive_state;

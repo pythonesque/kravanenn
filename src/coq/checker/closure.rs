@@ -4,7 +4,6 @@ use coq::kernel::names::{
     KnUser,
 };
 use core::convert::{TryFrom};
-use core::nonzero::{NonZero};
 use core::ops::Deref;
 use ocaml::de::{Array, ORef};
 use ocaml::values::{
@@ -37,6 +36,7 @@ use std::sync::{Arc};
 use typed_arena::{Arena};
 use util::borrow::{Cow};
 use util::ghost_cell::{Cell, Set};
+use util::nonzero::{NonZero};
 use vec_map::{self, VecMap};
 
 pub type Subs<'id, 'a, 'b> = SubsRaw<&'a [FConstr<'id, 'a, 'b>]>;
@@ -1137,7 +1137,7 @@ impl<'id, 'a, 'b> Subs<'id, 'a, 'b> {
                Some(i) => i,
                None => return Err((IdxError::from(NoneError), t))
            };
-           let i = match Idx::new(i) {
+           let i = match Idx::try_new(i) {
                Ok(i) => i,
                Err(e) => return Err((e, t))
            };
@@ -1908,7 +1908,8 @@ impl<'id, 'a, 'b, S> Stack<'id, 'a, 'b, !, S> { */
                             },
                             Constr::Rel(n) => {
                                 // TODO: Might know n is NonZero if it's been typechecked?
-                                let n = Idx::new(NonZero::new(n).ok_or(IdxError::from(NoneError))?)?;
+                                let n = Idx::try_new(NonZero::new(n)
+                                                     .ok_or(IdxError::from(NoneError))?)?;
                                 m = Cow::Owned(e.clos_rel(&info.set, n, ctx)?);
                                 break; // knh
                             },
@@ -2035,7 +2036,7 @@ impl<'id, 'a, 'b, S> Stack<'id, 'a, 'b, !, S> { */
                 },
                 Constr::Rel(n) => {
                     // TODO: Might know n is NonZero if it's been typechecked?
-                    let n = Idx::new(NonZero::new(n).ok_or(IdxError::from(NoneError))?)?;
+                    let n = Idx::try_new(NonZero::new(n).ok_or(IdxError::from(NoneError))?)?;
                     let t = env.clos_rel(&info.set, n, ctx)?;
                     return self.knh(info, globals, t, ctx, i, s)
                 },

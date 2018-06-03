@@ -35,7 +35,6 @@ use coq::kernel::esubst::{
 use coq::kernel::names::{
     KnCan,
 };
-use core::nonzero::{NonZero};
 use ocaml::de::{
     ORef,
 };
@@ -69,6 +68,7 @@ use std::convert::{TryFrom};
 use std::iter::{self};
 use std::option::{NoneError};
 use std::sync::{Arc};
+use util::nonzero::{NonZero};
 
 impl<'b, 'g> Env<'b, 'g> {
     /// NOTE: Unlike the OCaml implementation, v1 and v2 are not guaranteed to have the same length
@@ -723,7 +723,7 @@ impl<'b, 'g> Env<'b, 'g> {
                 Ok((self, ty))
             },
             Constr::Rel(n) => {
-                let idx = Idx::new(NonZero::new(n).ok_or(IdxError::from(NoneError))?)?;
+                let idx = Idx::try_new(NonZero::new(n).ok_or(IdxError::from(NoneError))?)?;
                 self.judge_of_relative(idx)
             },
             //Constr::Var(_),
